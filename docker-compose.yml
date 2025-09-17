@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  cerbos-authz:
+    build: .
+    ports:
+      - "8000:8000"  # HTTP port
+      - "9000:9000"  # gRPC port
+    environment:
+      - CERBOS_CHECK=http://cerbos:3592/api/check/resources
+      - MAPPING_SERVICE_URL=http://admin-service:8080
+      - MAPPING_API_TOKEN=development_token
+      - KEYCLOAK_JWKS=https://keycloak:8080/auth/realms/development/protocol/openid-connect/certs
+      - VERIFY_JWT=false
+      - CACHE_TTL_SECONDS=30
+      - CACHE_FAILED_TTL_SECONDS=300
+      - REDIS_URL=redis://redis:6379
+      - FAILURE_MODE=fail_open
+      - CIRCUIT_BREAKER_ENABLED=true
+      - CIRCUIT_BREAKER_FAILURE_THRESHOLD=5
+      - CIRCUIT_BREAKER_RECOVERY_TIME_SECONDS=60
+      - HEALTH_CHECK_INTERVAL_SECONDS=30
+      - OTEL_ENDPOINT=signoz-collector:4317
+      - OTEL_SERVICE_NAME=cerbos-authz
+      - LOG_LEVEL=debug
+      - MOCK_MODE=true
+    depends_on:
+      - redis
+      - cerbos
+    command: ["./cerbos-authz", "--http=8000", "--grpc=9000"]
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  # Cerbos Policy Decision Point
+  cerbos:
+    image: ghcr.io/cerbos/cerbos:latest
+    ports:
+      - "3592:3592"  # HTTP API
+      - "3593:3593"  # gRPC API
+    volumes:
+      - ./cerbos-policies:/policies:ro
+    command:
+      - server
+      - --config=/config/config.yaml
+      - --log-level=DEBUG
+    environment:
+      - CERBOS_NO_TELEMETRY=1
+
+  # Mock admin service for mapping
+  admin-service:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./mock-admin:/usr/share/nginx/html:ro
+
+  # Optional: SignOz for observability
+  signoz-collector:
+    image: signoz/signoz-otel-collector:latest
+    ports:
+      - "4317:4317"  # gRPC OTLP endpoint
+    environment:
+      - SIGNOZ_API_URL=http://signoz-query-service:8080
+    depends_on:
+      - signoz-query-service
+
+  signoz-query-service:
+    image: signoz/query-service:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - STORAGE_BACKEND=sqlite
+      - SQLITE_STORAGE_PATH=/var/lib/signoz/signoz.db
+
+volumes:
+  redis_data: 
