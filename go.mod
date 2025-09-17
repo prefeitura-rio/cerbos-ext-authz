@@ -1,6 +1,6 @@
 module github.com/prefeitura-rio/cerbos-ext-authz
 
-go 1.24
+go 1.23
 
 require (
 	github.com/envoyproxy/go-control-plane v0.12.0
