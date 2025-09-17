@@ -48,6 +48,9 @@ env.bak/
 venv.bak/
 .env
 
+# Direnv
+.direnv/
+
 # Nix
 result
 result-*
