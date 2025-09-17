@@ -111,7 +111,7 @@ func (c *client) fetchMapping(ctx context.Context, path, method string) (*Mappin
 		return nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 
-	mappingURL := baseURL.ResolveReference(&url.URL{Path: "/mappings"})
+	mappingURL := baseURL.ResolveReference(&url.URL{Path: "/api/v1/mappings"})
 
 	// Add query parameters
 	params := url.Values{}
@@ -139,9 +139,21 @@ func (c *client) fetchMapping(ctx context.Context, path, method string) (*Mappin
 		_ = resp.Body.Close()
 	}()
 
-	// Handle 404 as "no mapping found"
+	// Handle different types of 404 responses
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
+		// Try to parse the response body to distinguish between endpoint not found vs mapping not found
+		var errorResponse struct {
+			Error      string `json:"error"`
+			StatusCode int    `json:"status_code"`
+		}
+		
+		if err := json.NewDecoder(resp.Body).Decode(&errorResponse); err == nil {
+			// Successfully parsed JSON error response - this means mapping not found
+			return nil, nil
+		}
+		
+		// Failed to parse JSON - likely endpoint not found (wrong URL)
+		return nil, fmt.Errorf("mapping service endpoint not found (404) - check URL path")
 	}
 
 	if resp.StatusCode != http.StatusOK {
