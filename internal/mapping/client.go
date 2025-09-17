@@ -146,12 +146,12 @@ func (c *client) fetchMapping(ctx context.Context, path, method string) (*Mappin
 			Error      string `json:"error"`
 			StatusCode int    `json:"status_code"`
 		}
-		
+
 		if err := json.NewDecoder(resp.Body).Decode(&errorResponse); err == nil {
 			// Successfully parsed JSON error response - this means mapping not found
 			return nil, nil
 		}
-		
+
 		// Failed to parse JSON - likely endpoint not found (wrong URL)
 		return nil, fmt.Errorf("mapping service endpoint not found (404) - check URL path")
 	}
