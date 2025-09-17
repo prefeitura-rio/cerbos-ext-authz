@@ -418,7 +418,7 @@ func (s *Service) createResponseFromCerbos(result *cerbos.CheckResourcesResponse
 	if !allowed {
 		status = "denied"
 		if decision := result.GetDecision(action); decision != "" {
-			reason = "policy_denied"  // Generic reason since Cerbos API returns simple strings
+			reason = "policy_denied" // Generic reason since Cerbos API returns simple strings
 		}
 	}
 
