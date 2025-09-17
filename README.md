@@ -1,6 +1,6 @@
 # Envoy External Authorization Service for Cerbos
 
-A high-performance external authorization service for Envoy Proxy that integrates with Cerbos PDP (Policy Decision Point). This service validates JWT tokens and performs policy-based authorization decisions using Cerbos.
+A high-performance external authorization service for Envoy Proxy that integrates with Cerbos PDP (Policy Decision Point). This service validates JWT tokens and performs policy-based authorization decisions using Cerbos policies.
 
 ## Features
 
