@@ -73,13 +73,18 @@ func (c *client) GetAction(ctx context.Context, path, method string) (string, *M
 		return c.mockGetAction(path, method)
 	}
 
-	// Check cache first - empty string indicates cached miss
-	if action, mapping := c.cache.get(path, method); action != "" {
-		return action, mapping, nil
-	} else if action == "" && mapping == nil {
-		// This is a cached miss
-		return "", nil, fmt.Errorf("no mapping found for %s %s (cached)", method, path)
+	// Check cache first
+	cacheResult := c.cache.get(path, method)
+	if cacheResult.Hit {
+		if cacheResult.Action != "" {
+			// Valid cached mapping
+			return cacheResult.Action, cacheResult.Mapping, nil
+		} else {
+			// Cached miss (no mapping found)
+			return "", nil, fmt.Errorf("no mapping found for %s %s (cached)", method, path)
+		}
 	}
+	// Cache miss or expired - proceed to fetch from service
 
 	// Fetch from mapping service
 	mapping, err := c.fetchMapping(ctx, path, method)
@@ -201,15 +206,23 @@ func (c *client) mockGetAction(path, method string) (string, *Mapping, error) {
 	return action, mapping, nil
 }
 
+// CacheResult represents the result of a cache lookup
+type CacheResult struct {
+	Action  string
+	Mapping *Mapping
+	Hit     bool
+	Expired bool
+}
+
 // get retrieves a cached mapping
-func (c *mappingCache) get(path, method string) (string, *Mapping) {
+func (c *mappingCache) get(path, method string) CacheResult {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	key := c.cacheKey(path, method)
 	entry, exists := c.data[key]
 	if !exists {
-		return "", nil
+		return CacheResult{Hit: false, Expired: false}
 	}
 
 	if time.Now().After(entry.expiresAt) {
@@ -219,10 +232,15 @@ func (c *mappingCache) get(path, method string) (string, *Mapping) {
 		delete(c.data, key)
 		c.mu.Unlock()
 		c.mu.RLock()
-		return "", nil
+		return CacheResult{Hit: false, Expired: true}
 	}
 
-	return entry.action, entry.mapping
+	return CacheResult{
+		Action:  entry.action,
+		Mapping: entry.mapping,
+		Hit:     true,
+		Expired: false,
+	}
 }
 
 // set stores a mapping in the cache
