@@ -50,8 +50,8 @@ type CheckResourcesResponse struct {
 
 // ResourceActionResponse represents the response for a specific resource
 type ResourceActionResponse struct {
-	Resource ResourceInfo              `json:"resource"`
-	Actions  map[string]ActionDecision `json:"actions"`
+	Resource ResourceInfo      `json:"resource"`
+	Actions  map[string]string `json:"actions"`
 }
 
 // ActionDecision represents the decision for a specific action
@@ -131,7 +131,7 @@ func (c *client) mockCheck(request *CheckResourcesRequest) (*CheckResourcesRespo
 	responses := make([]ResourceActionResponse, len(request.Resources))
 
 	for i, resource := range request.Resources {
-		actions := make(map[string]ActionDecision)
+		actions := make(map[string]string)
 		for _, action := range resource.Actions {
 			// Mock logic: deny for anonymous users, allow for authenticated users
 			result := "EFFECT_ALLOW"
@@ -139,10 +139,7 @@ func (c *client) mockCheck(request *CheckResourcesRequest) (*CheckResourcesRespo
 				result = "EFFECT_DENY"
 			}
 
-			actions[action] = ActionDecision{
-				Result: result,
-				Reason: "mock_decision",
-			}
+			actions[action] = result
 		}
 
 		responses[i] = ResourceActionResponse{
@@ -168,19 +165,19 @@ func (r *CheckResourcesResponse) IsAllowed(action string) bool {
 		return false
 	}
 
-	return decision.Result == "EFFECT_ALLOW"
+	return decision == "EFFECT_ALLOW"
 }
 
 // GetDecision returns the decision for a specific action
-func (r *CheckResourcesResponse) GetDecision(action string) *ActionDecision {
+func (r *CheckResourcesResponse) GetDecision(action string) string {
 	if len(r.Results) == 0 {
-		return nil
+		return ""
 	}
 
 	decision, exists := r.Results[0].Actions[action]
 	if !exists {
-		return nil
+		return ""
 	}
 
-	return &decision
+	return decision
 }
