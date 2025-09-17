@@ -105,10 +105,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [ "${GITHUB_REF##*/}" == "main" ]; then
+            echo "TAG=stable" >> $GITHUB_OUTPUT
+          elif [ "${GITHUB_REF##*/}" == "staging" ]; then
+            echo "TAG=latest" >> $GITHUB_OUTPUT
+          else
+            echo "TAG=latest" >> $GITHUB_OUTPUT
+          fi
+
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'ghcr.io/${{ github.repository_owner }}/cerbos-ext-authz:${{ env.TAG1 }}'
+          image-ref: 'ghcr.io/${{ github.repository_owner }}/cerbos-ext-authz:${{ steps.tag.outputs.TAG }}'
           format: 'sarif'
           output: 'trivy-results.sarif'
 
