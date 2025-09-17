@@ -14,7 +14,7 @@
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            go_1_24
+            go_1_23
             gcc
             docker
             docker-compose
