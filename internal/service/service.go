@@ -135,6 +135,18 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 	startTime := time.Now()
 	requestID := generateRequestID()
 
+	// Debug logging: Log complete request details
+	if s.telemetry != nil && s.telemetry.Logger != nil {
+		s.telemetry.Logger.WithFields(map[string]interface{}{
+			"request_id":  requestID,
+			"method":      req.Method,
+			"path":        req.Path,
+			"host":        req.Host,
+			"service":     req.Service,
+			"auth_header": req.AuthHeader,
+		}).Info("Complete request details for debugging")
+	}
+
 	// Safe tracing with panic protection
 	var span trace.Span
 	if s.telemetry != nil && s.telemetry.Tracer != nil && s.telemetry.Provider != nil && s.telemetry.Meter != nil {
@@ -226,7 +238,27 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 	}
 
 	// Get action from mapping service
+	if s.telemetry != nil && s.telemetry.Logger != nil {
+		s.telemetry.Logger.WithFields(map[string]interface{}{
+			"request_id":     requestID,
+			"mapping_path":   req.Path,
+			"mapping_method": req.Method,
+		}).Info("Calling mapping service GetAction")
+	}
 	action, _, err := s.mappingClient.GetAction(ctx, req.Path, req.Method)
+	if s.telemetry != nil && s.telemetry.Logger != nil {
+		if err != nil {
+			s.telemetry.Logger.WithFields(map[string]interface{}{
+				"request_id": requestID,
+				"error":      err.Error(),
+			}).Info("GetAction returned error")
+		} else {
+			s.telemetry.Logger.WithFields(map[string]interface{}{
+				"request_id": requestID,
+				"action":     action,
+			}).Info("GetAction returned successfully")
+		}
+	}
 	if err != nil {
 		if s.telemetry != nil {
 			s.telemetry.Logger.WithError(err).Warn("No action mapping found - denying request for security")
