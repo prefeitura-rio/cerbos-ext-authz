@@ -291,6 +291,10 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 		host = headers["host"]
 	}
 
+	// Debug logging: Log ALL headers
+	log.Printf("[DEBUG] gRPC Request - Method: %s, Path: %s, Host: %s", method, path, host)
+	log.Printf("[DEBUG] All Headers: %+v", headers)
+
 	// Extract authorization header
 	authHeader := ""
 	if headers != nil {
@@ -342,6 +346,10 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	}
 
 	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, request.URL, request.Header, returnIfNotTooLong(string(body)))
+
+	// Debug logging: Log ALL headers for HTTP requests
+	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, request.URL.Path, request.Host)
+	log.Printf("[DEBUG] All HTTP Headers: %+v", request.Header)
 
 	// Allow OPTIONS requests (CORS preflight) without requiring authorization
 	if request.Method == "OPTIONS" {
