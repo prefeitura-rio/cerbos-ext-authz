@@ -284,11 +284,40 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 
 	// Extract request details
 	headers := httpAttrs.GetHeaders()
-	path := httpAttrs.GetPath()
 	method := httpAttrs.GetMethod()
 	host := ""
 	if headers != nil {
 		host = headers["host"]
+	}
+
+	// Extract path from X-Envoy-Original-Path header
+	path := ""
+	if headers != nil {
+		if originalPath, exists := headers["x-envoy-original-path"]; exists {
+			path = originalPath
+		}
+	}
+
+	// If X-Envoy-Original-Path header is missing, deny the request
+	if path == "" {
+		log.Printf("[gRPC][denied]: Missing X-Envoy-Original-Path header")
+		return &authv3.CheckResponse{
+			Status: &status.Status{Code: int32(codes.InvalidArgument)},
+			HttpResponse: &authv3.CheckResponse_DeniedResponse{
+				DeniedResponse: &authv3.DeniedHttpResponse{
+					Status: &typev3.HttpStatus{Code: typev3.StatusCode_BadRequest},
+					Body:   "Missing X-Envoy-Original-Path header - path information required for authorization",
+					Headers: []*corev3.HeaderValueOption{
+						{
+							Header: &corev3.HeaderValue{
+								Key:   "X-Cerbos-Error",
+								Value: "missing_original_path_header",
+							},
+						},
+					},
+				},
+			},
+		}, nil
 	}
 
 	// Debug logging: Log ALL headers
@@ -369,11 +398,21 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	// Extract target service hint
 	targetService := request.Header.Get(targetServiceHeader)
 
+	// Extract path from X-Envoy-Original-Path header
+	path := request.Header.Get("X-Envoy-Original-Path")
+	if path == "" {
+		log.Printf("[HTTP][denied]: Missing X-Envoy-Original-Path header")
+		response.Header().Set("X-Cerbos-Error", "missing_original_path_header")
+		response.WriteHeader(http.StatusBadRequest)
+		response.Write([]byte("Missing X-Envoy-Original-Path header - path information required for authorization"))
+		return
+	}
+
 	// Create authorization request
 	authReq := &service.AuthorizationRequest{
 		AuthHeader: authHeader,
 		Service:    targetService,
-		Path:       request.URL.Path,
+		Path:       path,
 		Method:     request.Method,
 		Host:       request.Host,
 	}
