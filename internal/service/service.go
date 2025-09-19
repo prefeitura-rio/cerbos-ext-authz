@@ -259,6 +259,25 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 			}).Info("GetAction returned successfully")
 		}
 	}
+
+	// Check for public action - always allow without Cerbos check
+	if action == "public" {
+		if s.telemetry != nil && s.telemetry.Logger != nil {
+			s.telemetry.Logger.WithFields(map[string]interface{}{
+				"request_id": requestID,
+				"action":     action,
+			}).Info("Public action detected - allowing without authorization check")
+		}
+		return &AuthorizationResponse{
+			Allowed:     true,
+			Status:      "allowed",
+			Action:      action,
+			PrincipalID: principalID,
+			Cache:       "miss", // Public actions are not cached
+			Reason:      "public endpoint",
+		}, nil
+	}
+
 	if err != nil {
 		if s.telemetry != nil {
 			s.telemetry.Logger.WithError(err).Warn("No action mapping found - denying request for security")

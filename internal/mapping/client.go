@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -133,6 +134,10 @@ func (c *client) fetchMapping(ctx context.Context, path, method string) (*Mappin
 	// Add authorization header if token is provided
 	if c.config.APIToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.config.APIToken)
+		// Debug logging for API token
+		log.Printf("[DEBUG] Mapping service call with API token: Bearer %s", c.config.APIToken)
+	} else {
+		log.Printf("[DEBUG] No API token configured for mapping service")
 	}
 
 	// Make request
