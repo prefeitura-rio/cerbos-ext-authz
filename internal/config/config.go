@@ -29,6 +29,11 @@ type Config struct {
 	CacheFailedTTLSeconds int
 	RedisURL              string
 
+	// Redis mappings settings (separate Redis instance for action mappings)
+	RedisMappingsPassword        string
+	RedisMappingsSentinelHosts   string
+	RedisMappingsSentinelService string
+
 	// Failure handling
 	FailureMode                    string
 	CircuitBreakerEnabled          bool
@@ -133,6 +138,19 @@ func Load() (*Config, error) {
 
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		config.RedisURL = redisURL
+	}
+
+	// Redis mappings settings
+	if password := os.Getenv("REDIS_MAPPINGS_PASSWORD"); password != "" {
+		config.RedisMappingsPassword = password
+	}
+
+	if sentinelHosts := os.Getenv("REDIS_MAPPINGS_SENTINEL_HOSTS"); sentinelHosts != "" {
+		config.RedisMappingsSentinelHosts = sentinelHosts
+	}
+
+	if sentinelService := os.Getenv("REDIS_MAPPINGS_SENTINEL_SERVICE_NAME"); sentinelService != "" {
+		config.RedisMappingsSentinelService = sentinelService
 	}
 
 	if mode := os.Getenv("FAILURE_MODE"); mode != "" {

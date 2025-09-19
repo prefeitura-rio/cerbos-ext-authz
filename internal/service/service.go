@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -60,10 +61,14 @@ func NewService(cfg *config.Config) (*Service, error) {
 
 	// Create mapping client
 	mappingConfig := &mapping.Config{
+		// Redis mappings configuration
+		RedisSentinelHosts:   cfg.RedisMappingsSentinelHosts,
+		RedisSentinelService: cfg.RedisMappingsSentinelService,
+		RedisPassword:        cfg.RedisMappingsPassword,
+		// Legacy HTTP configuration (kept for fallback)
 		BaseURL:  cfg.MappingServiceURL,
 		APIToken: cfg.MappingAPIToken,
 		Timeout:  cfg.MappingTimeout,
-		CacheTTL: time.Duration(cfg.CacheTTLSeconds) * time.Second,
 		MockMode: cfg.MockMode,
 	}
 	mappingClient := mapping.NewClient(mappingConfig)
@@ -238,26 +243,12 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 	}
 
 	// Get action from mapping service
-	if s.telemetry != nil && s.telemetry.Logger != nil {
-		s.telemetry.Logger.WithFields(map[string]interface{}{
-			"request_id":     requestID,
-			"mapping_path":   req.Path,
-			"mapping_method": req.Method,
-		}).Info("Calling mapping service GetAction")
-	}
+	log.Printf("[MAPPING] Resolving action for: %s %s", req.Method, req.Path)
 	action, _, err := s.mappingClient.GetAction(ctx, req.Path, req.Method)
-	if s.telemetry != nil && s.telemetry.Logger != nil {
-		if err != nil {
-			s.telemetry.Logger.WithFields(map[string]interface{}{
-				"request_id": requestID,
-				"error":      err.Error(),
-			}).Info("GetAction returned error")
-		} else {
-			s.telemetry.Logger.WithFields(map[string]interface{}{
-				"request_id": requestID,
-				"action":     action,
-			}).Info("GetAction returned successfully")
-		}
+	if err != nil {
+		log.Printf("[MAPPING] ✗ Resolution failed: %v", err)
+	} else {
+		log.Printf("[MAPPING] ✓ Resolved to action: %s", action)
 	}
 
 	// Check for public action - always allow without Cerbos check
