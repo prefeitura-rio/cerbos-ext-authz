@@ -73,10 +73,11 @@ func NewService(cfg *config.Config) (*Service, error) {
 	}
 	mappingClient := mapping.NewClient(mappingConfig)
 
-	// Create JWT parser
+	// Create JWT parser with JWKS endpoint and issuer validation
 	jwtConfig := &jwt.Config{
-		VerifySignature: cfg.VerifyJWT,
-		JWKSEndpoint:    cfg.KeycloakJWKS,
+		JWKSEndpoint:   cfg.JWKSEndpoint,
+		ExpectedIssuer: cfg.JWTIssuer,
+		Timeout:        cfg.JWTTimeout,
 	}
 	jwtParser := jwt.NewParser(jwtConfig)
 
@@ -253,12 +254,7 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 
 	// Check for public action - always allow without Cerbos check
 	if action == "public" {
-		if s.telemetry != nil && s.telemetry.Logger != nil {
-			s.telemetry.Logger.WithFields(map[string]interface{}{
-				"request_id": requestID,
-				"action":     action,
-			}).Info("Public action detected - allowing without authorization check")
-		}
+		log.Printf("[AUTH] Public endpoint - allowing without authorization")
 		return &AuthorizationResponse{
 			Allowed:     true,
 			Status:      "allowed",
@@ -266,6 +262,33 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 			PrincipalID: principalID,
 			Cache:       "miss", // Public actions are not cached
 			Reason:      "public endpoint",
+		}, nil
+	}
+
+	// Check for authenticated action - only validate JWT, no role checks
+	if action == "authenticated" {
+		// If we got here, JWT was already validated in extractPrincipal
+		// Check if user is authenticated (not anonymous)
+		if principalID == "anonymous" {
+			log.Printf("[AUTH] Authenticated endpoint requires valid JWT - denying anonymous user")
+			return &AuthorizationResponse{
+				Allowed:     false,
+				Status:      "denied",
+				Action:      action,
+				PrincipalID: principalID,
+				Cache:       "miss", // Authentication failures are not cached
+				Reason:      "authentication required",
+			}, nil
+		}
+
+		log.Printf("[AUTH] Authenticated endpoint - JWT valid for principal: %s", principalID)
+		return &AuthorizationResponse{
+			Allowed:     true,
+			Status:      "allowed",
+			Action:      action,
+			PrincipalID: principalID,
+			Cache:       "miss", // Authenticated actions are not cached to ensure fresh JWT validation
+			Reason:      "valid JWT token",
 		}, nil
 	}
 
@@ -557,7 +580,7 @@ func (s *Service) GetHealth() map[string]interface{} {
 		"config": map[string]interface{}{
 			"cerbos_endpoint":     s.config.CerbosEndpoint,
 			"mapping_service_url": s.config.MappingServiceURL,
-			"verify_jwt":          s.config.VerifyJWT,
+			"jwks_endpoint":       s.config.JWKSEndpoint,
 			"failure_mode":        s.config.FailureMode,
 			"mock_mode":           s.config.MockMode,
 		},
@@ -610,15 +633,10 @@ func (s *Service) extractPrincipal(authHeader string) (string, []string, error) 
 		return "anonymous", []string{}, nil
 	}
 
-	// Parse JWT token
+	// Parse and validate JWT token (includes signature verification, expiration, nbf checks)
 	claims, err := s.jwtParser.ParseToken(token)
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid JWT token: %w", err)
-	}
-
-	// Check if token is expired
-	if claims.IsExpired() {
-		return "", nil, fmt.Errorf("token is expired")
+		return "", nil, fmt.Errorf("JWT validation failed: %w", err)
 	}
 
 	principalID := claims.GetUserID()

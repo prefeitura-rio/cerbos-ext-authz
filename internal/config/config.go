@@ -20,8 +20,8 @@ type Config struct {
 	MappingTimeout    time.Duration
 
 	// JWT settings
-	KeycloakJWKS string
-	VerifyJWT    bool
+	JWKSEndpoint string
+	JWTIssuer    string
 	JWTTimeout   time.Duration
 
 	// Performance settings
@@ -61,9 +61,9 @@ func Load() (*Config, error) {
 		CerbosTimeout:                  2 * time.Second,
 		MappingServiceURL:              "",
 		MappingTimeout:                 500 * time.Millisecond,
-		KeycloakJWKS:                   "",
-		VerifyJWT:                      false,
-		JWTTimeout:                     1 * time.Second,
+		JWKSEndpoint:                   "",
+		JWTIssuer:                      "",
+		JWTTimeout:                     5 * time.Second,
 		CacheTTLSeconds:                30,
 		CacheFailedTTLSeconds:          300,
 		RedisURL:                       "redis://localhost:6379",
@@ -104,12 +104,16 @@ func Load() (*Config, error) {
 	}
 
 	// JWT settings
-	if jwks := os.Getenv("KEYCLOAK_JWKS"); jwks != "" {
-		config.KeycloakJWKS = jwks
+	if jwks := os.Getenv("JWKS_ENDPOINT"); jwks != "" {
+		config.JWKSEndpoint = jwks
+	} else {
+		return nil, fmt.Errorf("JWKS_ENDPOINT is required for JWT validation")
 	}
 
-	if verifyJWT := os.Getenv("VERIFY_JWT"); verifyJWT != "" {
-		config.VerifyJWT = strings.ToLower(verifyJWT) == "true"
+	if issuer := os.Getenv("JWT_ISSUER"); issuer != "" {
+		config.JWTIssuer = issuer
+	} else {
+		return nil, fmt.Errorf("JWT_ISSUER is required for JWT validation")
 	}
 
 	if jwtTimeout := os.Getenv("JWT_TIMEOUT_SECONDS"); jwtTimeout != "" {
@@ -273,10 +277,10 @@ func (c *Config) Validate() error {
 // String returns a string representation of the config (without sensitive data)
 func (c *Config) String() string {
 	return fmt.Sprintf(
-		"Config{CerbosEndpoint: %s, MappingServiceURL: %s, VerifyJWT: %t, CacheTTL: %ds, RedisURL: %s, FailureMode: %s, CircuitBreaker: %t, Port: %d, MockMode: %t}",
+		"Config{CerbosEndpoint: %s, MappingServiceURL: %s, JWKSEndpoint: %s, CacheTTL: %ds, RedisURL: %s, FailureMode: %s, CircuitBreaker: %t, Port: %d, MockMode: %t}",
 		c.CerbosEndpoint,
 		c.MappingServiceURL,
-		c.VerifyJWT,
+		c.JWKSEndpoint,
 		c.CacheTTLSeconds,
 		c.RedisURL,
 		c.FailureMode,
