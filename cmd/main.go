@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -39,6 +40,15 @@ var (
 	grpcPort = flag.String("grpc", "9000", "gRPC server port")
 	denyBody = "denied by ext_authz: authorization failed"
 )
+
+// stripQueryParams removes query parameters from a path
+// Example: "/api/users?id=123&name=test" -> "/api/users"
+func stripQueryParams(path string) string {
+	if idx := strings.Index(path, "?"); idx != -1 {
+		return path[:idx]
+	}
+	return path
+}
 
 // ExtAuthzServer implements the ext_authz v3 gRPC and HTTP check request API.
 type ExtAuthzServer struct {
@@ -294,7 +304,8 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 	path := ""
 	if headers != nil {
 		if originalPath, exists := headers["x-envoy-original-path"]; exists {
-			path = originalPath
+			// Strip query parameters for mapping lookup
+			path = stripQueryParams(originalPath)
 		}
 	}
 
@@ -399,14 +410,17 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	targetService := request.Header.Get(targetServiceHeader)
 
 	// Extract path from X-Envoy-Original-Path header
-	path := request.Header.Get("X-Envoy-Original-Path")
-	if path == "" {
+	originalPath := request.Header.Get("X-Envoy-Original-Path")
+	if originalPath == "" {
 		log.Printf("[HTTP][denied]: Missing X-Envoy-Original-Path header")
 		response.Header().Set("X-Cerbos-Error", "missing_original_path_header")
 		response.WriteHeader(http.StatusBadRequest)
 		response.Write([]byte("Missing X-Envoy-Original-Path header - path information required for authorization"))
 		return
 	}
+
+	// Strip query parameters for mapping lookup
+	path := stripQueryParams(originalPath)
 
 	// Create authorization request
 	authReq := &service.AuthorizationRequest{
