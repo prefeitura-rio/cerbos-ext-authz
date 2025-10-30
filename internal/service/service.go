@@ -419,8 +419,26 @@ func (s *Service) authorizeToCerbos(ctx context.Context, principalID string, rol
 		},
 	}
 
+	// Log Cerbos authorization request with CPF
+	log.Printf("[CERBOS] Checking authorization: principal=%s, action=%s, resource=%s %s, roles=%v",
+		principalID, action, method, path, roles)
+
 	result, err := s.cerbosClient.CheckResources(ctx, request)
 	duration := time.Since(startTime)
+
+	// Log Cerbos authorization result
+	if err != nil {
+		log.Printf("[CERBOS] ✗ Authorization check failed for principal=%s: %v", principalID, err)
+	} else if result != nil {
+		allowed := result.IsAllowed(action)
+		if allowed {
+			log.Printf("[CERBOS] ✓ Authorization ALLOWED: principal=%s, action=%s, resource=%s %s",
+				principalID, action, method, path)
+		} else {
+			log.Printf("[CERBOS] ✗ Authorization DENIED: principal=%s, action=%s, resource=%s %s",
+				principalID, action, method, path)
+		}
+	}
 
 	// Record metrics
 	if s.metrics != nil {
