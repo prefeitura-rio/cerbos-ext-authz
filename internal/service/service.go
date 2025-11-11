@@ -309,6 +309,19 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 		return response, nil
 	}
 
+	// Block anonymous users for policy-protected endpoints
+	if principalID == "anonymous" {
+		log.Printf("[AUTH] Policy-protected endpoint (%s) - denying anonymous user", action)
+		return &AuthorizationResponse{
+			Allowed:     false,
+			Status:      "denied",
+			Action:      action,
+			PrincipalID: principalID,
+			Cache:       "miss",
+			Reason:      "authentication required",
+		}, nil
+	}
+
 	// Check circuit breaker
 	if s.config.CircuitBreakerEnabled && s.circuitBreaker.IsOpen() {
 		// Circuit breaker is open, handle based on failure mode
