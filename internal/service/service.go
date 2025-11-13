@@ -677,6 +677,11 @@ func (s *Service) extractPrincipal(authHeader string) (string, []string, error) 
 
 	roles := claims.GetRoles()
 
+	// Assign default "authenticated" role if user has valid JWT but no realm roles
+	if len(roles) == 0 && principalID != "anonymous" {
+		roles = []string{"authenticated"}
+	}
+
 	return principalID, roles, nil
 }
 
