@@ -300,29 +300,36 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 		host = headers["host"]
 	}
 
-	// Extract path from X-Envoy-Original-Path header
+	// Extract path - use direct path for cluster-internal requests, X-Envoy-Original-Path for external
 	path := ""
-	if headers != nil {
+	isClusterInternal := strings.HasSuffix(host, ".svc.cluster.local")
+
+	if isClusterInternal {
+		// For cluster-internal requests, use the direct path
+		path = stripQueryParams(httpAttrs.GetPath())
+		log.Printf("[gRPC] Cluster-internal request detected (host: %s), using direct path: %s", host, path)
+	} else if headers != nil {
+		// For external requests, use X-Envoy-Original-Path header
 		if originalPath, exists := headers["x-envoy-original-path"]; exists {
 			// Strip query parameters for mapping lookup
 			path = stripQueryParams(originalPath)
 		}
 	}
 
-	// If X-Envoy-Original-Path header is missing, deny the request
+	// If path is still empty, deny the request
 	if path == "" {
-		log.Printf("[gRPC][denied]: Missing X-Envoy-Original-Path header")
+		log.Printf("[gRPC][denied]: Missing path information (host: %s, cluster-internal: %v)", host, isClusterInternal)
 		return &authv3.CheckResponse{
 			Status: &status.Status{Code: int32(codes.InvalidArgument)},
 			HttpResponse: &authv3.CheckResponse_DeniedResponse{
 				DeniedResponse: &authv3.DeniedHttpResponse{
 					Status: &typev3.HttpStatus{Code: typev3.StatusCode_BadRequest},
-					Body:   "Missing X-Envoy-Original-Path header - path information required for authorization",
+					Body:   "Missing path information - required for authorization",
 					Headers: []*corev3.HeaderValueOption{
 						{
 							Header: &corev3.HeaderValue{
 								Key:   "X-Cerbos-Error",
-								Value: "missing_original_path_header",
+								Value: "missing_path_information",
 							},
 						},
 					},
@@ -409,18 +416,39 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	// Extract target service hint
 	targetService := request.Header.Get(targetServiceHeader)
 
-	// Extract path from X-Envoy-Original-Path header
-	originalPath := request.Header.Get("X-Envoy-Original-Path")
-	if originalPath == "" {
-		log.Printf("[HTTP][denied]: Missing X-Envoy-Original-Path header")
-		response.Header().Set("X-Cerbos-Error", "missing_original_path_header")
-		response.WriteHeader(http.StatusBadRequest)
-		response.Write([]byte("Missing X-Envoy-Original-Path header - path information required for authorization"))
-		return
+	// Extract host
+	host := request.Host
+
+	// Extract path - use direct path for cluster-internal requests, X-Envoy-Original-Path for external
+	path := ""
+	isClusterInternal := strings.HasSuffix(host, ".svc.cluster.local")
+
+	if isClusterInternal {
+		// For cluster-internal requests, use the direct request path
+		path = stripQueryParams(request.URL.Path)
+		log.Printf("[HTTP] Cluster-internal request detected (host: %s), using direct path: %s", host, path)
+	} else {
+		// For external requests, use X-Envoy-Original-Path header
+		originalPath := request.Header.Get("X-Envoy-Original-Path")
+		if originalPath == "" {
+			log.Printf("[HTTP][denied]: Missing X-Envoy-Original-Path header for external request (host: %s)", host)
+			response.Header().Set("X-Cerbos-Error", "missing_original_path_header")
+			response.WriteHeader(http.StatusBadRequest)
+			_, _ = response.Write([]byte("Missing X-Envoy-Original-Path header - path information required for authorization"))
+			return
+		}
+		// Strip query parameters for mapping lookup
+		path = stripQueryParams(originalPath)
 	}
 
-	// Strip query parameters for mapping lookup
-	path := stripQueryParams(originalPath)
+	// If path is still empty, deny the request
+	if path == "" {
+		log.Printf("[HTTP][denied]: Missing path information (host: %s, cluster-internal: %v)", host, isClusterInternal)
+		response.Header().Set("X-Cerbos-Error", "missing_path_information")
+		response.WriteHeader(http.StatusBadRequest)
+		_, _ = response.Write([]byte("Missing path information - required for authorization"))
+		return
+	}
 
 	// Create authorization request
 	authReq := &service.AuthorizationRequest{
