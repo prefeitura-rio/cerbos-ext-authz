@@ -302,7 +302,12 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 
 	// Extract path - use direct path for cluster-internal requests, X-Envoy-Original-Path for external
 	path := ""
-	isClusterInternal := strings.HasSuffix(host, ".svc.cluster.local")
+	// Strip port from host before checking if it's cluster-internal
+	hostWithoutPort := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostWithoutPort = h
+	}
+	isClusterInternal := strings.HasSuffix(hostWithoutPort, ".svc.cluster.local")
 
 	if isClusterInternal {
 		// For cluster-internal requests, use the direct path
@@ -421,7 +426,12 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 
 	// Extract path - use direct path for cluster-internal requests, X-Envoy-Original-Path for external
 	path := ""
-	isClusterInternal := strings.HasSuffix(host, ".svc.cluster.local")
+	// Strip port from host before checking if it's cluster-internal
+	hostWithoutPort := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		hostWithoutPort = h
+	}
+	isClusterInternal := strings.HasSuffix(hostWithoutPort, ".svc.cluster.local")
 
 	if isClusterInternal {
 		// For cluster-internal requests, use the direct request path
