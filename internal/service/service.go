@@ -197,7 +197,42 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 		}()
 	}
 
-	// Extract principal from JWT token
+	// Get action from mapping service FIRST (before JWT validation)
+	// This allows public endpoints to bypass JWT validation entirely
+	log.Printf("[MAPPING] Resolving action for: %s %s", req.Method, req.Path)
+	action, _, err := s.mappingClient.GetAction(ctx, req.Path, req.Method)
+
+	if err != nil {
+		if s.telemetry != nil {
+			s.telemetry.Logger.WithError(err).Warn("No action mapping found - denying request for security")
+		}
+		// Security: Deny request when no mapping exists
+		response := &AuthorizationResponse{
+			Allowed:     false,
+			Status:      "no_action_mapping",
+			Action:      "",
+			PrincipalID: principalID,
+			Cache:       "miss",
+			Reason:      "no action mapping found for endpoint",
+		}
+		s.logRequest(requestID, principalID, response.Status, false, time.Since(startTime), err)
+		return response, nil
+	}
+
+	// Check for public action - allow without any JWT validation
+	if action == "public" {
+		log.Printf("[AUTH] Public endpoint - allowing without authorization")
+		return &AuthorizationResponse{
+			Allowed:     true,
+			Status:      "allowed",
+			Action:      action,
+			PrincipalID: "anonymous", // Public endpoints don't require authentication
+			Cache:       "miss",      // Public actions are not cached
+			Reason:      "public endpoint",
+		}, nil
+	}
+
+	// Extract principal from JWT token (only for non-public endpoints)
 	principalID, roles, err := s.extractPrincipal(req.AuthHeader)
 	if err != nil {
 		return &AuthorizationResponse{
@@ -243,28 +278,6 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 		s.telemetry.LogCache("get", cacheKey, false, time.Since(startTime))
 	}
 
-	// Get action from mapping service
-	log.Printf("[MAPPING] Resolving action for: %s %s", req.Method, req.Path)
-	action, _, err := s.mappingClient.GetAction(ctx, req.Path, req.Method)
-	if err != nil {
-		log.Printf("[MAPPING] ✗ Resolution failed: %v", err)
-	} else {
-		log.Printf("[MAPPING] ✓ Resolved to action: %s", action)
-	}
-
-	// Check for public action - always allow without Cerbos check
-	if action == "public" {
-		log.Printf("[AUTH] Public endpoint - allowing without authorization")
-		return &AuthorizationResponse{
-			Allowed:     true,
-			Status:      "allowed",
-			Action:      action,
-			PrincipalID: principalID,
-			Cache:       "miss", // Public actions are not cached
-			Reason:      "public endpoint",
-		}, nil
-	}
-
 	// Check for authenticated action - only validate JWT, no role checks
 	if action == "authenticated" {
 		// If we got here, JWT was already validated in extractPrincipal
@@ -290,23 +303,6 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 			Cache:       "miss", // Authenticated actions are not cached to ensure fresh JWT validation
 			Reason:      "valid JWT token",
 		}, nil
-	}
-
-	if err != nil {
-		if s.telemetry != nil {
-			s.telemetry.Logger.WithError(err).Warn("No action mapping found - denying request for security")
-		}
-		// Security: Deny request when no mapping exists
-		response := &AuthorizationResponse{
-			Allowed:     false,
-			Status:      "no_action_mapping",
-			Action:      "",
-			PrincipalID: principalID,
-			Cache:       "miss",
-			Reason:      "no action mapping found for endpoint",
-		}
-		s.logRequest(requestID, principalID, response.Status, false, time.Since(startTime), err)
-		return response, nil
 	}
 
 	// Block anonymous users for policy-protected endpoints
