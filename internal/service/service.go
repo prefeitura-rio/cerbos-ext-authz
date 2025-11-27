@@ -201,22 +201,25 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 	// This allows public endpoints to bypass JWT validation entirely
 	log.Printf("[MAPPING] Resolving action for: %s %s", req.Method, req.Path)
 	action, _, err := s.mappingClient.GetAction(ctx, req.Path, req.Method)
-
 	if err != nil {
+		log.Printf("[MAPPING] ✗ Resolution failed: %v", err)
 		if s.telemetry != nil {
 			s.telemetry.Logger.WithError(err).Warn("No action mapping found - denying request for security")
 		}
 		// Security: Deny request when no mapping exists
+		// Use "unknown" as principal since we haven't validated JWT yet
 		response := &AuthorizationResponse{
 			Allowed:     false,
 			Status:      "no_action_mapping",
 			Action:      "",
-			PrincipalID: principalID,
+			PrincipalID: "unknown",
 			Cache:       "miss",
 			Reason:      "no action mapping found for endpoint",
 		}
-		s.logRequest(requestID, principalID, response.Status, false, time.Since(startTime), err)
+		s.logRequest(requestID, "unknown", response.Status, false, time.Since(startTime), err)
 		return response, nil
+	} else {
+		log.Printf("[MAPPING] ✓ Resolved to action: %s", action)
 	}
 
 	// Check for public action - allow without any JWT validation
