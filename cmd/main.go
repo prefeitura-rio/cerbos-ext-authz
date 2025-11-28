@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -402,6 +403,17 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	// Debug logging: Log ALL headers for HTTP requests
 	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, request.URL.Path, request.Host)
 	log.Printf("[DEBUG] All HTTP Headers: %+v", request.Header)
+
+	// Health check endpoint - accessible without authorization
+	if request.Method == "GET" && request.URL.Path == "/health" {
+		health := s.service.GetHealth()
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(response).Encode(health); err != nil {
+			log.Printf("[HTTP][health] Failed to encode health response: %v", err)
+		}
+		return
+	}
 
 	// Allow OPTIONS requests (CORS preflight) without requiring authorization
 	if request.Method == "OPTIONS" {
