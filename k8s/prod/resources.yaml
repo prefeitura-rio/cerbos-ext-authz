@@ -8,7 +8,6 @@ metadata:
   annotations:
     secrets.infisical.com/auto-reload: "true"
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: cerbos-authz
@@ -85,7 +84,7 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: cerbos-authz
-  minReplicas: 1
+  minReplicas: 2
   maxReplicas: 10
   metrics:
     - type: Resource
