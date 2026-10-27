@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -235,76 +234,6 @@ func (c *client) patternMatchingFallback(ctx context.Context, path, method strin
 	// No match found
 	log.Printf("[MAPPING] ✗ No pattern matches found for %s %s", method, path)
 	return "", nil, nil
-}
-
-// fetchMapping calls the mapping service to get the mapping
-func (c *client) fetchMapping(ctx context.Context, path, method string) (*Mapping, error) {
-	// Build URL with query parameters
-	baseURL, err := url.Parse(c.config.BaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid base URL: %w", err)
-	}
-
-	mappingURL := baseURL.ResolveReference(&url.URL{Path: "/api/v1/mappings"})
-
-	// Add query parameters
-	params := url.Values{}
-	params.Add("path", path)
-	params.Add("method", method)
-	mappingURL.RawQuery = params.Encode()
-
-	// Create request
-	req, err := http.NewRequestWithContext(ctx, "GET", mappingURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Add authorization header if token is provided
-	if c.config.APIToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.config.APIToken)
-		// Debug logging for API token
-		log.Printf("[DEBUG] Mapping service call with API token: Bearer %s", c.config.APIToken)
-	} else {
-		log.Printf("[DEBUG] No API token configured for mapping service")
-	}
-
-	// Make request
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call mapping service: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	// Handle different types of 404 responses
-	if resp.StatusCode == http.StatusNotFound {
-		// Try to parse the response body to distinguish between endpoint not found vs mapping not found
-		var errorResponse struct {
-			Error      string `json:"error"`
-			StatusCode int    `json:"status_code"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&errorResponse); err == nil {
-			// Successfully parsed JSON error response - this means mapping not found
-			return nil, nil
-		}
-
-		// Failed to parse JSON - likely endpoint not found (wrong URL)
-		return nil, fmt.Errorf("mapping service endpoint not found (404) - check URL path")
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mapping service returned status %d", resp.StatusCode)
-	}
-
-	// Parse response
-	var mapping Mapping
-	if err := json.NewDecoder(resp.Body).Decode(&mapping); err != nil {
-		return nil, fmt.Errorf("failed to decode mapping response: %w", err)
-	}
-
-	return &mapping, nil
 }
 
 // mockGetAction provides mock responses for testing

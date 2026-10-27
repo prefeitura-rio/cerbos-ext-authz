@@ -68,6 +68,31 @@ func (s *ExtAuthzServer) logRequest(allow string, request *authv3.CheckRequest) 
 		request.GetAttributes())
 }
 
+// logDenyDetails logs, server-side, the Cerbos decision details that used to be
+// exposed to clients through X-Cerbos-* response headers.
+func (s *ExtAuthzServer) logDenyDetails(authResponse *service.AuthorizationResponse) {
+	log.Printf("[gRPCv3][denied][details]: %s", denyDetails(authResponse, s.circuitBreakerState))
+}
+
+func (s *ExtAuthzServer) circuitBreakerState() string {
+	if s.service == nil {
+		return "unknown"
+	}
+	return s.service.GetCircuitBreakerState()
+}
+
+// denyDetails renders the decision details of a denied request for logging.
+func denyDetails(authResponse *service.AuthorizationResponse, cbState func() string) string {
+	health := "healthy"
+	cb := ""
+	if authResponse.Status == "degraded" || authResponse.Status == "circuit_breaker_open" {
+		health = "degraded"
+		cb = cbState()
+	}
+	return fmt.Sprintf("%s=%s x-cerbos-status=%q x-cerbos-action=%q x-cerbos-principal=%q x-cerbos-cache=%q x-cerbos-service-health=%q x-cerbos-circuit-breaker-state=%q",
+		resultHeader, resultDenied, authResponse.Status, authResponse.Action, authResponse.PrincipalID, authResponse.Cache, health, cb)
+}
+
 func (s *ExtAuthzServer) allow(request *authv3.CheckRequest) *authv3.CheckResponse {
 	s.logRequest("allowed", request)
 	return &authv3.CheckResponse{
@@ -151,25 +176,13 @@ func (s *ExtAuthzServer) allowWithDetails(request *authv3.CheckRequest, authResp
 
 func (s *ExtAuthzServer) deny(request *authv3.CheckRequest) *authv3.CheckResponse {
 	s.logRequest("denied", request)
+	// No debug headers are returned to the client on denied responses; the
+	// decision details are only kept in the server logs (see logRequest).
 	return &authv3.CheckResponse{
 		HttpResponse: &authv3.CheckResponse_DeniedResponse{
 			DeniedResponse: &authv3.DeniedHttpResponse{
 				Status: &typev3.HttpStatus{Code: typev3.StatusCode_Forbidden},
 				Body:   denyBody,
-				Headers: []*corev3.HeaderValueOption{
-					{
-						Header: &corev3.HeaderValue{
-							Key:   resultHeader,
-							Value: resultDenied,
-						},
-					},
-					{
-						Header: &corev3.HeaderValue{
-							Key:   receivedHeader,
-							Value: returnIfNotTooLong(request.GetAttributes().String()),
-						},
-					},
-				},
 			},
 		},
 		Status: &status.Status{Code: int32(codes.PermissionDenied)},
@@ -179,78 +192,10 @@ func (s *ExtAuthzServer) deny(request *authv3.CheckRequest) *authv3.CheckRespons
 func (s *ExtAuthzServer) denyWithDetails(request *authv3.CheckRequest, authResponse *service.AuthorizationResponse) *authv3.CheckResponse {
 	s.logRequest("denied", request)
 
-	// Create headers with detailed information
-	headers := []*corev3.HeaderValueOption{
-		{
-			Header: &corev3.HeaderValue{
-				Key:   resultHeader,
-				Value: resultDenied,
-			},
-		},
-		{
-			Header: &corev3.HeaderValue{
-				Key:   receivedHeader,
-				Value: returnIfNotTooLong(request.GetAttributes().String()),
-			},
-		},
-		{
-			Header: &corev3.HeaderValue{
-				Key:   "X-Cerbos-Status",
-				Value: authResponse.Status,
-			},
-		},
-	}
-
-	// Add optional headers if present
-	if authResponse.Action != "" {
-		headers = append(headers, &corev3.HeaderValueOption{
-			Header: &corev3.HeaderValue{
-				Key:   "X-Cerbos-Action",
-				Value: authResponse.Action,
-			},
-		})
-	}
-
-	if authResponse.PrincipalID != "" {
-		headers = append(headers, &corev3.HeaderValueOption{
-			Header: &corev3.HeaderValue{
-				Key:   "X-Cerbos-Principal",
-				Value: authResponse.PrincipalID,
-			},
-		})
-	}
-
-	if authResponse.Cache != "" {
-		headers = append(headers, &corev3.HeaderValueOption{
-			Header: &corev3.HeaderValue{
-				Key:   "X-Cerbos-Cache",
-				Value: authResponse.Cache,
-			},
-		})
-	}
-
-	// Add service health information for degraded states
-	if authResponse.Status == "degraded" || authResponse.Status == "circuit_breaker_open" {
-		headers = append(headers, &corev3.HeaderValueOption{
-			Header: &corev3.HeaderValue{
-				Key:   "X-Cerbos-Service-Health",
-				Value: "degraded",
-			},
-		})
-		headers = append(headers, &corev3.HeaderValueOption{
-			Header: &corev3.HeaderValue{
-				Key:   "X-Cerbos-Circuit-Breaker-State",
-				Value: s.service.GetCircuitBreakerState(),
-			},
-		})
-	} else {
-		headers = append(headers, &corev3.HeaderValueOption{
-			Header: &corev3.HeaderValue{
-				Key:   "X-Cerbos-Service-Health",
-				Value: "healthy",
-			},
-		})
-	}
+	// Debug details (result, received attributes, Cerbos status/action/
+	// principal/cache/health/circuit breaker) are logged server-side only and
+	// are never returned to the client.
+	s.logDenyDetails(authResponse)
 
 	// Provide error message based on status
 	var errorMessage string
@@ -274,9 +219,8 @@ func (s *ExtAuthzServer) denyWithDetails(request *authv3.CheckRequest, authRespo
 	return &authv3.CheckResponse{
 		HttpResponse: &authv3.CheckResponse_DeniedResponse{
 			DeniedResponse: &authv3.DeniedHttpResponse{
-				Status:  &typev3.HttpStatus{Code: typev3.StatusCode_Forbidden},
-				Body:    errorMessage,
-				Headers: headers,
+				Status: &typev3.HttpStatus{Code: typev3.StatusCode_Forbidden},
+				Body:   errorMessage,
 			},
 		},
 		Status: &status.Status{Code: int32(codes.PermissionDenied)},
@@ -331,14 +275,6 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 				DeniedResponse: &authv3.DeniedHttpResponse{
 					Status: &typev3.HttpStatus{Code: typev3.StatusCode_BadRequest},
 					Body:   "Missing path information - required for authorization",
-					Headers: []*corev3.HeaderValueOption{
-						{
-							Header: &corev3.HeaderValue{
-								Key:   "X-Cerbos-Error",
-								Value: "missing_path_information",
-							},
-						},
-					},
 				},
 			},
 		}, nil
@@ -454,7 +390,6 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 		originalPath := request.Header.Get("X-Envoy-Original-Path")
 		if originalPath == "" {
 			log.Printf("[HTTP][denied]: Missing X-Envoy-Original-Path header for external request (host: %s)", host)
-			response.Header().Set("X-Cerbos-Error", "missing_original_path_header")
 			response.WriteHeader(http.StatusBadRequest)
 			_, _ = response.Write([]byte("Missing X-Envoy-Original-Path header - path information required for authorization"))
 			return
@@ -466,7 +401,6 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	// If path is still empty, deny the request
 	if path == "" {
 		log.Printf("[HTTP][denied]: Missing path information (host: %s, cluster-internal: %v)", host, isClusterInternal)
-		response.Header().Set("X-Cerbos-Error", "missing_path_information")
 		response.WriteHeader(http.StatusBadRequest)
 		_, _ = response.Write([]byte("Missing path information - required for authorization"))
 		return
@@ -488,8 +422,7 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	authResponse, err := s.service.Authorize(ctx, authReq)
 	if err != nil {
 		log.Printf("[HTTP] authorization error: %v", err)
-		response.Header().Set(resultHeader, resultDenied)
-		response.Header().Set(receivedHeader, l)
+		log.Printf("[HTTP][denied]: %s=%s %s=%s", resultHeader, resultDenied, receivedHeader, l)
 		response.WriteHeader(http.StatusForbidden)
 		_, _ = response.Write([]byte(denyBody))
 		return
@@ -514,29 +447,8 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 
 		response.WriteHeader(http.StatusOK)
 	} else {
-		log.Printf("[HTTP][denied]: %s", l)
-		response.Header().Set(resultHeader, resultDenied)
-		response.Header().Set(receivedHeader, l)
-
-		// Add detailed status information in headers
-		response.Header().Set("X-Cerbos-Status", authResponse.Status)
-		if authResponse.Action != "" {
-			response.Header().Set("X-Cerbos-Action", authResponse.Action)
-		}
-		if authResponse.PrincipalID != "" {
-			response.Header().Set("X-Cerbos-Principal", authResponse.PrincipalID)
-		}
-		if authResponse.Cache != "" {
-			response.Header().Set("X-Cerbos-Cache", authResponse.Cache)
-		}
-
-		// Add service health information for degraded states
-		if authResponse.Status == "degraded" || authResponse.Status == "circuit_breaker_open" {
-			response.Header().Set("X-Cerbos-Service-Health", "degraded")
-			response.Header().Set("X-Cerbos-Circuit-Breaker-State", s.service.GetCircuitBreakerState())
-		} else {
-			response.Header().Set("X-Cerbos-Service-Health", "healthy")
-		}
+		// Debug details are logged server-side only, never sent to the client.
+		log.Printf("[HTTP][denied]: %s %s=%s", denyDetails(authResponse, s.circuitBreakerState), receivedHeader, l)
 
 		// Provide error message based on status
 		var errorMessage string
