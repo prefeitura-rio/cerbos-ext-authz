@@ -282,7 +282,7 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 
 	// Debug logging: Log ALL headers
 	log.Printf("[DEBUG] gRPC Request - Method: %s, Path: %s, Host: %s", method, path, host)
-	log.Printf("[DEBUG] All Headers: %+v", headers)
+	log.Printf("[DEBUG] All Headers: %+v", redactedHeaderMap(headers))
 
 	// Extract authorization header
 	authHeader := ""
@@ -334,11 +334,11 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 		log.Printf("[HTTP] read body failed: %v", err)
 	}
 
-	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, request.URL, request.Header, returnIfNotTooLong(string(body)))
+	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, request.URL, redactedHeaders(request.Header), returnIfNotTooLong(string(body)))
 
 	// Debug logging: Log ALL headers for HTTP requests
 	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, request.URL.Path, request.Host)
-	log.Printf("[DEBUG] All HTTP Headers: %+v", request.Header)
+	log.Printf("[DEBUG] All HTTP Headers: %+v", redactedHeaders(request.Header))
 
 	// Health check endpoint - accessible without authorization
 	if request.Method == "GET" && request.URL.Path == "/health" {
@@ -588,4 +588,40 @@ func returnIfNotTooLong(body string) string {
 		return "<too-long>"
 	}
 	return body
+}
+
+// sensitiveHeaders carry credentials or personal data (the JWT holds CPF, name and e-mail): never logged nor echoed back.
+var sensitiveHeaders = map[string]bool{
+	"authorization":        true,
+	"proxy-authorization":  true,
+	"cookie":               true,
+	"x-auth-request-token": true,
+}
+
+const redacted = "[omitido]"
+
+// redactedHeaders returns a copy of the headers with the sensitive values replaced.
+func redactedHeaders(headers http.Header) http.Header {
+	out := make(http.Header, len(headers))
+	for name, values := range headers {
+		if sensitiveHeaders[strings.ToLower(name)] {
+			out[name] = []string{redacted}
+			continue
+		}
+		out[name] = values
+	}
+	return out
+}
+
+// redactedHeaderMap is redactedHeaders for the gRPC check request headers.
+func redactedHeaderMap(headers map[string]string) map[string]string {
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		if sensitiveHeaders[strings.ToLower(name)] {
+			out[name] = redacted
+			continue
+		}
+		out[name] = value
+	}
+	return out
 }
