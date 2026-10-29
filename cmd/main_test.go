@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -139,5 +141,36 @@ func TestAllowWithDetailsKeepsUpstreamHeaders(t *testing.T) {
 	}
 	if _, ok := got[receivedHeader]; !ok {
 		t.Errorf("allowed response lost %s", receivedHeader)
+	}
+}
+
+func TestRedactedHeadersHideCredentials(t *testing.T) {
+	headers := http.Header{
+		"Authorization":         {"Bearer eyJ.secret.jwt"},
+		"Cookie":                {"access_token=eyJ.secret"},
+		"X-Auth-Request-Token":  {"eyJ.secret"},
+		"X-Envoy-Original-Path": {"/go/api/v1/x"},
+	}
+	got := redactedHeaders(headers)
+	for _, name := range []string{"Authorization", "Cookie", "X-Auth-Request-Token"} {
+		if got.Get(name) != redacted {
+			t.Errorf("%s = %q, want %q", name, got.Get(name), redacted)
+		}
+	}
+	if got.Get("X-Envoy-Original-Path") != "/go/api/v1/x" {
+		t.Errorf("non-sensitive header changed: %q", got.Get("X-Envoy-Original-Path"))
+	}
+	if headers.Get("Authorization") != "Bearer eyJ.secret.jwt" {
+		t.Error("the original headers must not be modified")
+	}
+}
+
+func TestRedactedHeaderMapHidesCredentials(t *testing.T) {
+	got := redactedHeaderMap(map[string]string{"authorization": "Bearer eyJ.secret", ":path": "/go/x"})
+	if got["authorization"] != redacted || got[":path"] != "/go/x" {
+		t.Errorf("unexpected redaction: %v", got)
+	}
+	if strings.Contains(fmt.Sprintf("%v", got), "eyJ") {
+		t.Error("token leaked in the formatted map")
 	}
 }
