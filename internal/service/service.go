@@ -138,6 +138,19 @@ func NewService(cfg *config.Config) (*Service, error) {
 	}, nil
 }
 
+// requestLogFields describes a request for the logs without the credential itself: the Authorization
+// header carries the citizen's JWT (CPF, name and e-mail), so only its presence is logged.
+func requestLogFields(requestID string, req *AuthorizationRequest) map[string]interface{} {
+	return map[string]interface{}{
+		"request_id":          requestID,
+		"method":              req.Method,
+		"path":                req.Path,
+		"host":                req.Host,
+		"service":             req.Service,
+		"auth_header_present": req.AuthHeader != "",
+	}
+}
+
 // Authorize performs Cerbos-based authorization and returns an authorization decision
 func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*AuthorizationResponse, error) {
 	startTime := time.Now()
@@ -145,14 +158,7 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 
 	// Debug logging: Log complete request details
 	if s.telemetry != nil && s.telemetry.Logger != nil {
-		s.telemetry.Logger.WithFields(map[string]interface{}{
-			"request_id":  requestID,
-			"method":      req.Method,
-			"path":        req.Path,
-			"host":        req.Host,
-			"service":     req.Service,
-			"auth_header": req.AuthHeader,
-		}).Info("Complete request details for debugging")
+		s.telemetry.Logger.WithFields(requestLogFields(requestID, req)).Info("Complete request details for debugging")
 	}
 
 	// Safe tracing with panic protection
