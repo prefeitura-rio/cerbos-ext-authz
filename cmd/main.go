@@ -25,6 +25,7 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -61,11 +62,59 @@ type ExtAuthzServer struct {
 	grpcPort chan int
 }
 
+// sensitiveHeaders carry credentials (the Keycloak JWT holds the citizen's CPF,
+// name and e-mail) and never reach the logs or the x-ext-authz-check-received header.
+var sensitiveHeaders = map[string]bool{
+	"authorization":               true,
+	"proxy-authorization":         true,
+	"cookie":                      true,
+	"set-cookie":                  true,
+	"x-auth-request-token":        true,
+	"x-auth-request-access-token": true,
+	"x-forwarded-access-token":    true,
+	"x-api-key":                   true,
+}
+
+const redactedValue = "[REDACTED]"
+
+func isSensitiveHeader(name string) bool {
+	return sensitiveHeaders[strings.ToLower(name)]
+}
+
+func redactHTTPHeaders(headers http.Header) http.Header {
+	out := make(http.Header, len(headers))
+	for name, values := range headers {
+		if isSensitiveHeader(name) {
+			out[name] = []string{redactedValue}
+			continue
+		}
+		out[name] = values
+	}
+	return out
+}
+
+func redactAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext {
+	if attrs.GetRequest().GetHttp() == nil {
+		return attrs
+	}
+	clone, ok := proto.Clone(attrs).(*authv3.AttributeContext)
+	if !ok {
+		return &authv3.AttributeContext{}
+	}
+	headers := clone.GetRequest().GetHttp().GetHeaders()
+	for name := range headers {
+		if isSensitiveHeader(name) {
+			headers[name] = redactedValue
+		}
+	}
+	return clone
+}
+
 func (s *ExtAuthzServer) logRequest(allow string, request *authv3.CheckRequest) {
 	httpAttrs := request.GetAttributes().GetRequest().GetHttp()
 	log.Printf("[gRPCv3][%s]: %s%s, attributes: %v\n", allow, httpAttrs.GetHost(),
 		httpAttrs.GetPath(),
-		request.GetAttributes())
+		redactAttributes(request.GetAttributes()))
 }
 
 // logDenyDetails logs, server-side, the Cerbos decision details that used to be
@@ -108,7 +157,7 @@ func (s *ExtAuthzServer) allow(request *authv3.CheckRequest) *authv3.CheckRespon
 					{
 						Header: &corev3.HeaderValue{
 							Key:   receivedHeader,
-							Value: returnIfNotTooLong(request.GetAttributes().String()),
+							Value: returnIfNotTooLong(redactAttributes(request.GetAttributes()).String()),
 						},
 					},
 				},
@@ -131,7 +180,7 @@ func (s *ExtAuthzServer) allowWithDetails(request *authv3.CheckRequest, authResp
 		{
 			Header: &corev3.HeaderValue{
 				Key:   receivedHeader,
-				Value: returnIfNotTooLong(request.GetAttributes().String()),
+				Value: returnIfNotTooLong(redactAttributes(request.GetAttributes()).String()),
 			},
 		},
 	}
@@ -280,9 +329,7 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 		}, nil
 	}
 
-	// Debug logging: Log ALL headers
 	log.Printf("[DEBUG] gRPC Request - Method: %s, Path: %s, Host: %s", method, path, host)
-	log.Printf("[DEBUG] All Headers: %+v", headers)
 
 	// Extract authorization header
 	authHeader := ""
@@ -334,11 +381,9 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 		log.Printf("[HTTP] read body failed: %v", err)
 	}
 
-	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, request.URL, request.Header, returnIfNotTooLong(string(body)))
+	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, request.URL, redactHTTPHeaders(request.Header), returnIfNotTooLong(string(body)))
 
-	// Debug logging: Log ALL headers for HTTP requests
 	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, request.URL.Path, request.Host)
-	log.Printf("[DEBUG] All HTTP Headers: %+v", request.Header)
 
 	// Health check endpoint - accessible without authorization
 	if request.Method == "GET" && request.URL.Path == "/health" {

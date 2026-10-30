@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -109,6 +111,65 @@ func TestDenyDoesNotLeakHeaders(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "[denied]") || !strings.Contains(buf.String(), "/secret/internal/path") {
 		t.Errorf("deny log missing info: %s", buf.String())
+	}
+}
+
+const testJWT = "eyJhbGciOiJSUzI1NiJ9.eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiIxMjM0NTY3ODkwMSJ9.c2lnbmF0dXJl"
+
+func credentialHeaders() map[string]string {
+	return map[string]string{
+		"authorization":        "Bearer " + testJWT,
+		"cookie":               "access_token=" + testJWT,
+		"x-auth-request-token": testJWT,
+	}
+}
+
+func requestWithCredentials() *authv3.CheckRequest {
+	req := testRequest()
+	for k, v := range credentialHeaders() {
+		req.Attributes.Request.Http.Headers[k] = v
+	}
+	return req
+}
+
+func assertNoCredentials(t *testing.T, where, got string) {
+	t.Helper()
+	if strings.Contains(got, testJWT) {
+		t.Errorf("%s leaks the JWT: %s", where, got)
+	}
+}
+
+func TestGRPCLogsAndReceivedHeaderRedactCredentials(t *testing.T) {
+	buf := captureLog(t)
+	s := &ExtAuthzServer{}
+	req := requestWithCredentials()
+	allowed := s.allow(req)
+	s.allowWithDetails(req, &service.AuthorizationResponse{Allowed: true})
+	s.deny(req)
+	s.denyWithDetails(req, &service.AuthorizationResponse{Status: "invalid_token"})
+	assertNoCredentials(t, "log", buf.String())
+	if !strings.Contains(buf.String(), "[REDACTED]") || !strings.Contains(buf.String(), "/secret/internal/path") {
+		t.Errorf("log lost the redacted request attributes: %s", buf.String())
+	}
+	assertNoCredentials(t, receivedHeader, headerKeys(allowed.GetOkResponse().GetHeaders())[receivedHeader])
+	if req.Attributes.Request.Http.Headers["authorization"] != "Bearer "+testJWT {
+		t.Errorf("redaction changed the request itself: %q", req.Attributes.Request.Http.Headers["authorization"])
+	}
+}
+
+func TestHTTPLogsAndReceivedHeaderRedactCredentials(t *testing.T) {
+	buf := captureLog(t)
+	s := &ExtAuthzServer{}
+	req := httptest.NewRequest(http.MethodOptions, "http://services.example.test/secret/internal/path", nil)
+	for k, v := range credentialHeaders() {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	assertNoCredentials(t, "log", buf.String())
+	assertNoCredentials(t, receivedHeader, rec.Header().Get(receivedHeader))
+	if !strings.Contains(rec.Header().Get(receivedHeader), "[REDACTED]") {
+		t.Errorf("%s lost the redacted headers: %q", receivedHeader, rec.Header().Get(receivedHeader))
 	}
 }
 
