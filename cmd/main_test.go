@@ -236,6 +236,37 @@ func TestGRPCRedactionDropsRawHeaderMap(t *testing.T) {
 	}
 }
 
+func TestGRPCRedactionDropsRequestBody(t *testing.T) {
+	body := `{"access_token":"` + testJWT + `","cpf":"12345678901"}`
+	for name, set := range map[string]func(*authv3.AttributeContext_HttpRequest){
+		"body":     func(h *authv3.AttributeContext_HttpRequest) { h.Body = body },
+		"raw_body": func(h *authv3.AttributeContext_HttpRequest) { h.RawBody = []byte(body) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			buf := captureLog(t)
+			s := &ExtAuthzServer{}
+			req := testRequest()
+			set(req.Attributes.Request.Http)
+			allowed := s.allow(req)
+			s.deny(req)
+			received := headerKeys(allowed.GetOkResponse().GetHeaders())[receivedHeader]
+			for where, got := range map[string]string{"log": buf.String(), receivedHeader: received} {
+				assertNoCredentials(t, where, got)
+				if strings.Contains(got, "12345678901") {
+					t.Errorf("%s leaks the request body: %s", where, got)
+				}
+				if !strings.Contains(got, fmt.Sprintf("body_size: %d", len(body))) {
+					t.Errorf("%s lost the body size: %s", where, got)
+				}
+			}
+			http := req.Attributes.Request.Http
+			if http.GetBody()+string(http.GetRawBody()) != body {
+				t.Errorf("redaction changed the request itself")
+			}
+		})
+	}
+}
+
 func TestHTTPLogsAndReceivedHeaderNeverCarryTheBody(t *testing.T) {
 	buf := captureLog(t)
 	s := &ExtAuthzServer{}

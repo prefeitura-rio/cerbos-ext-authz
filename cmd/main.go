@@ -134,6 +134,12 @@ func redactAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext {
 		return &authv3.AttributeContext{}
 	}
 	dropUnknownFields(clone.ProtoReflect())
+	if httpAttrs := clone.GetRequest().GetHttp(); httpAttrs != nil {
+		if size := len(httpAttrs.GetBody()) + len(httpAttrs.GetRawBody()); size > 0 {
+			httpAttrs.Body = fmt.Sprintf("%s body_size: %d", redactedValue, size)
+			httpAttrs.RawBody = nil
+		}
+	}
 	headers := clone.GetRequest().GetHttp().GetHeaders()
 	for name := range headers {
 		if isSensitiveHeader(name) {
