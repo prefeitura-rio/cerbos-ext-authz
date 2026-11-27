@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const (
@@ -93,13 +94,51 @@ func redactHTTPHeaders(headers http.Header) http.Header {
 	return out
 }
 
+// dropUnknownFields removes, recursively, the fields this go-control-plane
+// version does not know. Envoy sends the raw request headers (credentials
+// included) in HttpRequest.header_map when encode_raw_headers is set, a field
+// v0.12.0 keeps as unknown bytes that String() would print unredacted.
+func dropUnknownFields(m protoreflect.Message) {
+	if len(m.GetUnknown()) > 0 {
+		m.SetUnknown(nil)
+	}
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		switch {
+		case fd.IsMap():
+			if fd.MapValue().Message() != nil {
+				v.Map().Range(func(_ protoreflect.MapKey, mv protoreflect.Value) bool {
+					dropUnknownFields(mv.Message())
+					return true
+				})
+			}
+		case fd.IsList():
+			if fd.Message() != nil {
+				l := v.List()
+				for i := 0; i < l.Len(); i++ {
+					dropUnknownFields(l.Get(i).Message())
+				}
+			}
+		case fd.Message() != nil:
+			dropUnknownFields(v.Message())
+		}
+		return true
+	})
+}
+
 func redactAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext {
-	if attrs.GetRequest().GetHttp() == nil {
+	if attrs == nil {
 		return attrs
 	}
 	clone, ok := proto.Clone(attrs).(*authv3.AttributeContext)
 	if !ok {
 		return &authv3.AttributeContext{}
+	}
+	dropUnknownFields(clone.ProtoReflect())
+	if httpAttrs := clone.GetRequest().GetHttp(); httpAttrs != nil {
+		if size := len(httpAttrs.GetBody()) + len(httpAttrs.GetRawBody()); size > 0 {
+			httpAttrs.Body = fmt.Sprintf("%s body_size: %d", redactedValue, size)
+			httpAttrs.RawBody = nil
+		}
 	}
 	headers := clone.GetRequest().GetHttp().GetHeaders()
 	for name := range headers {
@@ -381,7 +420,8 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 		log.Printf("[HTTP] read body failed: %v", err)
 	}
 
-	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, request.URL, redactHTTPHeaders(request.Header), returnIfNotTooLong(string(body)))
+	// The body may carry credentials or citizen data: only its size is logged.
+	l := fmt.Sprintf("%s %s%s, headers: %v, body_size: %d\n", request.Method, request.Host, request.URL, redactHTTPHeaders(request.Header), len(body))
 
 	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, request.URL.Path, request.Host)
 
