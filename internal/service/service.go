@@ -12,6 +12,7 @@ import (
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/circuitbreaker"
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/config"
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/jwt"
+	"github.com/prefeitura-rio/cerbos-ext-authz/internal/logsafe"
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/mapping"
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/observability"
 	"go.opentelemetry.io/otel/attribute"
@@ -144,7 +145,7 @@ func requestLogFields(requestID string, req *AuthorizationRequest) map[string]in
 	return map[string]interface{}{
 		"request_id":          requestID,
 		"method":              req.Method,
-		"path":                req.Path,
+		"path":                logsafe.Path(req.Path),
 		"host":                req.Host,
 		"service":             req.Service,
 		"auth_header_present": req.AuthHeader != "",
@@ -177,7 +178,7 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 				trace.WithAttributes(
 					attribute.String("request_id", requestID),
 					attribute.String("service", req.Service),
-					attribute.String("path", req.Path),
+					attribute.String("path", logsafe.Path(req.Path)),
 					attribute.String("method", req.Method),
 				),
 			)
@@ -207,7 +208,7 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 
 	// Get action from mapping service FIRST (before JWT validation)
 	// This allows public endpoints to bypass JWT validation entirely
-	log.Printf("[MAPPING] Resolving action for: %s %s", req.Method, req.Path)
+	log.Printf("[MAPPING] Resolving action for: %s %s", req.Method, logsafe.Path(req.Path))
 	action, _, err := s.mappingClient.GetAction(ctx, req.Path, req.Method)
 	if err != nil {
 		log.Printf("[MAPPING] ✗ Resolution failed: %v", err)
@@ -440,9 +441,11 @@ func (s *Service) authorizeToCerbos(ctx context.Context, principalID string, rol
 	}
 
 	// The principal is the citizen's CPF: only its pseudonym reaches the logs.
+	// The path may carry a CPF too (/citizen/<cpf>): it is masked.
 	principalLog := PrincipalForLog(principalID)
+	pathLog := logsafe.Path(path)
 	log.Printf("[CERBOS] Checking authorization: principal=%s, action=%s, resource=%s %s, roles=%v",
-		principalLog, action, method, path, roles)
+		principalLog, action, method, pathLog, roles)
 
 	result, err := s.cerbosClient.CheckResources(ctx, request)
 	duration := time.Since(startTime)
@@ -454,10 +457,10 @@ func (s *Service) authorizeToCerbos(ctx context.Context, principalID string, rol
 		allowed := result.IsAllowed(action)
 		if allowed {
 			log.Printf("[CERBOS] ✓ Authorization ALLOWED: principal=%s, action=%s, resource=%s %s",
-				principalLog, action, method, path)
+				principalLog, action, method, pathLog)
 		} else {
 			log.Printf("[CERBOS] ✗ Authorization DENIED: principal=%s, action=%s, resource=%s %s",
-				principalLog, action, method, path)
+				principalLog, action, method, pathLog)
 		}
 	}
 

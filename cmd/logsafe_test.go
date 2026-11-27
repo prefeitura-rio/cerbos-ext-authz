@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,5 +104,94 @@ func TestHTTPLogsAndReceivedHeaderRedactQueryString(t *testing.T) {
 	}
 	if req.Header.Get("X-Envoy-Original-Path") != "/secret/internal/path?access_token="+queryToken {
 		t.Errorf("redaction changed the request headers: %q", req.Header.Get("X-Envoy-Original-Path"))
+	}
+}
+
+// syntheticCPF is a synthetic CPF (valid check digits, no real person) in an
+// app-rmi route that carries the citizen's CPF in the path.
+const syntheticCPF = "12345678909"
+
+func assertNoCPF(t *testing.T, where, got string) {
+	t.Helper()
+	if strings.Contains(got, syntheticCPF) {
+		t.Errorf("%s leaks the CPF in the path: %s", where, got)
+	}
+}
+
+func requestWithCPFPath() *authv3.CheckRequest {
+	req := testRequest()
+	httpAttrs := req.Attributes.Request.Http
+	httpAttrs.Path = "/rmi/v1/citizen/" + syntheticCPF + "/wallet?page=1"
+	httpAttrs.Headers[":path"] = httpAttrs.Path
+	httpAttrs.Headers["x-envoy-original-path"] = httpAttrs.Path
+	httpAttrs.Headers["referer"] = "https://app.example.test/citizen/" + syntheticCPF
+	return req
+}
+
+func TestGRPCLogsAndReceivedHeaderMaskTheCPFInThePath(t *testing.T) {
+	buf := captureLog(t)
+	s := &ExtAuthzServer{}
+	req := requestWithCPFPath()
+	original := req.Attributes.Request.Http.Path
+	allowed := s.allow(req)
+	withDetails := s.allowWithDetails(req, &service.AuthorizationResponse{Allowed: true})
+	s.deny(req)
+	s.denyWithDetails(req, &service.AuthorizationResponse{Status: "denied"})
+
+	logs := buf.String()
+	assertNoCPF(t, "log", logs)
+	if !strings.Contains(logs, "/rmi/v1/citizen/[CPF]/wallet?page=[REDACTED]") {
+		t.Errorf("log lost the masked path:\n%s", logs)
+	}
+	assertNoCPF(t, receivedHeader, headerKeys(allowed.GetOkResponse().GetHeaders())[receivedHeader])
+	assertNoCPF(t, receivedHeader, headerKeys(withDetails.GetOkResponse().GetHeaders())[receivedHeader])
+	if req.Attributes.Request.Http.Path != original || req.Attributes.Request.Http.Headers["x-envoy-original-path"] != original {
+		t.Errorf("masking changed the request itself: %q", req.Attributes.Request.Http.Path)
+	}
+}
+
+// The gRPC Check logs the path before it asks the service for the decision.
+// The zero Service has no mapping client and panics right after these lines,
+// which is enough to read them.
+func TestGRPCCheckLogsMaskTheCPFInThePath(t *testing.T) {
+	for host, want := range map[string]string{
+		"services.example.test":     "[DEBUG] gRPC Request - Method: GET, Path: /rmi/v1/citizen/[CPF]/wallet, Host: services.example.test",
+		"rmi.rmi.svc.cluster.local": "using direct path: /rmi/v1/citizen/[CPF]/wallet",
+	} {
+		buf := captureLog(t)
+		s := &ExtAuthzServer{service: &service.Service{}}
+		req := requestWithCPFPath()
+		req.Attributes.Request.Http.Headers["host"] = host
+		func() {
+			defer func() { _ = recover() }()
+			_, _ = s.Check(context.Background(), req)
+		}()
+		logs := buf.String()
+		assertNoCPF(t, "log", logs)
+		if !strings.Contains(logs, want) || !strings.Contains(logs, "Path: /rmi/v1/citizen/[CPF]/wallet") {
+			t.Errorf("host %s: log lost the masked path:\n%s", host, logs)
+		}
+	}
+}
+
+func TestHTTPLogsAndReceivedHeaderMaskTheCPFInThePath(t *testing.T) {
+	buf := captureLog(t)
+	s := &ExtAuthzServer{}
+	target := "http://services.example.test/rmi/v1/citizen/" + syntheticCPF + "/wallet"
+	req := httptest.NewRequest(http.MethodOptions, target, nil)
+	req.Header.Set("X-Envoy-Original-Path", "/rmi/v1/citizen/"+syntheticCPF+"/wallet")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+
+	received := rec.Header().Get(receivedHeader)
+	logs := buf.String()
+	assertNoCPF(t, "log", logs)
+	assertNoCPF(t, receivedHeader, received)
+	if !strings.Contains(logs, "[DEBUG] HTTP Request - Method: OPTIONS, Path: /rmi/v1/citizen/[CPF]/wallet") ||
+		!strings.Contains(received, "/rmi/v1/citizen/[CPF]/wallet") {
+		t.Errorf("log or %s lost the masked path:\n%s\n%s", receivedHeader, logs, received)
+	}
+	if req.Header.Get("X-Envoy-Original-Path") != "/rmi/v1/citizen/"+syntheticCPF+"/wallet" {
+		t.Errorf("masking changed the request headers: %q", req.Header.Get("X-Envoy-Original-Path"))
 	}
 }

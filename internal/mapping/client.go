@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/prefeitura-rio/cerbos-ext-authz/internal/logsafe"
 )
 
 // Client handles mapping service requests to resolve (path, method) -> action
@@ -105,11 +107,11 @@ func (c *client) GetAction(ctx context.Context, path, method string) (string, *M
 	// Try Redis lookup directly (no local caching needed since Redis is already fast)
 	action, mapping, err := c.getActionFromRedis(ctx, path, method)
 	if err != nil {
-		return "", nil, fmt.Errorf("mapping lookup failed for %s %s: %w", method, path, err)
+		return "", nil, fmt.Errorf("mapping lookup failed for %s %s: %w", method, logsafe.Path(path), err)
 	}
 
 	if action == "" {
-		return "", nil, fmt.Errorf("no mapping found for %s %s", method, path)
+		return "", nil, fmt.Errorf("no mapping found for %s %s", method, logsafe.Path(path))
 	}
 
 	return action, mapping, nil
@@ -119,18 +121,20 @@ func (c *client) GetAction(ctx context.Context, path, method string) (string, *M
 func (c *client) getActionFromRedis(ctx context.Context, path, method string) (string, *Mapping, error) {
 	// Step 1: Try fast path lookup (cache)
 	cacheKey := fmt.Sprintf("heimdall:mappings:lookup:%s:%s", method, path)
-	log.Printf("[MAPPING] Cache lookup: %s", cacheKey)
+	// The path may carry a CPF (/citizen/<cpf>): the logs show it masked.
+	pathLog := logsafe.Path(path)
+	log.Printf("[MAPPING] Cache lookup: heimdall:mappings:lookup:%s:%s", method, pathLog)
 
 	mappingID, err := c.redisClient.Get(ctx, cacheKey).Result()
 
 	if err == nil && mappingID != "" {
-		log.Printf("[MAPPING] ✓ Cache HIT: %s %s -> mapping_%s", method, path, mappingID)
+		log.Printf("[MAPPING] ✓ Cache HIT: %s %s -> mapping_%s", method, pathLog, mappingID)
 		// Step 2: Get mapping details from cache hit
 		return c.getMappingDetails(ctx, mappingID, path, method)
 	}
 
 	// Step 3: Pattern matching fallback
-	log.Printf("[MAPPING] ✗ Cache MISS: %s %s - trying pattern matching", method, path)
+	log.Printf("[MAPPING] ✗ Cache MISS: %s %s - trying pattern matching", method, pathLog)
 	return c.patternMatchingFallback(ctx, path, method)
 }
 
@@ -163,7 +167,7 @@ func (c *client) getMappingDetails(ctx context.Context, mappingID, originalPath,
 		},
 	}
 
-	log.Printf("[MAPPING] ✓ Resolved: %s %s -> %s (pattern: %s)", originalMethod, originalPath, redisMapping.ActionName, redisMapping.PathPattern)
+	log.Printf("[MAPPING] ✓ Resolved: %s %s -> %s (pattern: %s)", originalMethod, logsafe.Path(originalPath), redisMapping.ActionName, redisMapping.PathPattern)
 	return redisMapping.ActionName, mapping, nil
 }
 
@@ -179,7 +183,8 @@ func (c *client) patternMatchingFallback(ctx context.Context, path, method strin
 		return "", nil, fmt.Errorf("failed to get patterns for method %s: %w", method, err)
 	}
 
-	log.Printf("[MAPPING] Testing %d patterns for: %s %s", len(mappingIDs), method, path)
+	pathLog := logsafe.Path(path)
+	log.Printf("[MAPPING] Testing %d patterns for: %s %s", len(mappingIDs), method, pathLog)
 
 	// Step 2: Test each pattern until match found
 	for i, mappingID := range mappingIDs {
@@ -197,7 +202,7 @@ func (c *client) patternMatchingFallback(ctx context.Context, path, method strin
 		}
 
 		// Test if request path matches the pattern
-		log.Printf("[MAPPING] Pattern %d/%d: Testing '%s' against '%s'", i+1, len(mappingIDs), path, redisMapping.PathPattern)
+		log.Printf("[MAPPING] Pattern %d/%d: Testing '%s' against '%s'", i+1, len(mappingIDs), pathLog, redisMapping.PathPattern)
 		matched, err := regexp.MatchString(redisMapping.PathPattern, path)
 		if err != nil {
 			log.Printf("[MAPPING] Pattern %d/%d: ✗ Invalid regex '%s': %v", i+1, len(mappingIDs), redisMapping.PathPattern, err)
@@ -209,7 +214,7 @@ func (c *client) patternMatchingFallback(ctx context.Context, path, method strin
 
 			// Cache the result for future lookups (5 minute TTL as per spec)
 			cacheKey := fmt.Sprintf("heimdall:mappings:lookup:%s:%s", method, path)
-			log.Printf("[MAPPING] Caching result: %s -> mapping_%s (5min TTL)", cacheKey, mappingID)
+			log.Printf("[MAPPING] Caching result: heimdall:mappings:lookup:%s:%s -> mapping_%s (5min TTL)", method, pathLog, mappingID)
 			c.redisClient.SetEx(ctx, cacheKey, mappingID, 5*time.Minute)
 
 			// Convert to our Mapping struct
@@ -232,7 +237,7 @@ func (c *client) patternMatchingFallback(ctx context.Context, path, method strin
 	}
 
 	// No match found
-	log.Printf("[MAPPING] ✗ No pattern matches found for %s %s", method, path)
+	log.Printf("[MAPPING] ✗ No pattern matches found for %s %s", method, pathLog)
 	return "", nil, nil
 }
 
