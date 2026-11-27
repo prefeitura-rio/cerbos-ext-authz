@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/service"
 )
@@ -173,6 +176,116 @@ func TestHTTPLogsAndReceivedHeaderRedactCredentials(t *testing.T) {
 	assertNoCredentials(t, receivedHeader, rec.Header().Get(receivedHeader))
 	if !strings.Contains(rec.Header().Get(receivedHeader), "[REDACTED]") {
 		t.Errorf("%s lost the redacted headers: %q", receivedHeader, rec.Header().Get(receivedHeader))
+	}
+}
+
+// rawHeaderMap encodes, as Envoy does with encode_raw_headers, the request
+// headers in HttpRequest.header_map (field 13), which go-control-plane v0.12.0
+// does not know and keeps as unknown fields.
+func rawHeaderMap(t *testing.T) []byte {
+	t.Helper()
+	hm := &corev3.HeaderMap{Headers: []*corev3.HeaderValue{
+		{Key: "authorization", RawValue: []byte("Bearer " + testJWT)},
+		{Key: "cookie", Value: "access_token=" + testJWT},
+		{Key: "x-envoy-original-path", RawValue: []byte("/secret/internal/path")},
+	}}
+	b, err := proto.Marshal(hm)
+	if err != nil {
+		t.Fatalf("marshal header_map: %v", err)
+	}
+	raw := protowire.AppendTag(nil, 13, protowire.BytesType)
+	return protowire.AppendBytes(raw, b)
+}
+
+func requestWithRawHeaderMap(t *testing.T) *authv3.CheckRequest {
+	t.Helper()
+	req := testRequest()
+	httpBytes, err := proto.Marshal(req.Attributes.Request.Http)
+	if err != nil {
+		t.Fatalf("marshal http request: %v", err)
+	}
+	httpReq := &authv3.AttributeContext_HttpRequest{}
+	if err := proto.Unmarshal(append(httpBytes, rawHeaderMap(t)...), httpReq); err != nil {
+		t.Fatalf("unmarshal http request: %v", err)
+	}
+	req.Attributes.Request.Http = httpReq
+	return req
+}
+
+func TestGRPCRedactionDropsRawHeaderMap(t *testing.T) {
+	buf := captureLog(t)
+	s := &ExtAuthzServer{}
+	req := requestWithRawHeaderMap(t)
+	if !strings.Contains(req.String(), testJWT) {
+		t.Fatalf("test setup: the raw header_map should carry the JWT: %s", req.String())
+	}
+	allowed := s.allow(req)
+	withDetails := s.allowWithDetails(req, &service.AuthorizationResponse{Allowed: true})
+	s.deny(req)
+	s.denyWithDetails(req, &service.AuthorizationResponse{Status: "invalid_token"})
+	assertNoCredentials(t, "log", buf.String())
+	if !strings.Contains(buf.String(), "/secret/internal/path") {
+		t.Errorf("log lost the request attributes: %s", buf.String())
+	}
+	for _, resp := range []*authv3.CheckResponse{allowed, withDetails} {
+		received := headerKeys(resp.GetOkResponse().GetHeaders())[receivedHeader]
+		assertNoCredentials(t, receivedHeader, received)
+		if !strings.Contains(received, "services.example.test") {
+			t.Errorf("%s lost the request attributes: %q", receivedHeader, received)
+		}
+	}
+	if len(req.Attributes.Request.Http.ProtoReflect().GetUnknown()) == 0 {
+		t.Errorf("redaction changed the request itself: header_map was dropped from the original")
+	}
+}
+
+func TestGRPCRedactionDropsRequestBody(t *testing.T) {
+	body := `{"access_token":"` + testJWT + `","cpf":"12345678901"}`
+	for name, set := range map[string]func(*authv3.AttributeContext_HttpRequest){
+		"body":     func(h *authv3.AttributeContext_HttpRequest) { h.Body = body },
+		"raw_body": func(h *authv3.AttributeContext_HttpRequest) { h.RawBody = []byte(body) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			buf := captureLog(t)
+			s := &ExtAuthzServer{}
+			req := testRequest()
+			set(req.Attributes.Request.Http)
+			allowed := s.allow(req)
+			s.deny(req)
+			received := headerKeys(allowed.GetOkResponse().GetHeaders())[receivedHeader]
+			for where, got := range map[string]string{"log": buf.String(), receivedHeader: received} {
+				assertNoCredentials(t, where, got)
+				if strings.Contains(got, "12345678901") {
+					t.Errorf("%s leaks the request body: %s", where, got)
+				}
+				if !strings.Contains(got, fmt.Sprintf("body_size: %d", len(body))) {
+					t.Errorf("%s lost the body size: %s", where, got)
+				}
+			}
+			http := req.Attributes.Request.Http
+			if http.GetBody()+string(http.GetRawBody()) != body {
+				t.Errorf("redaction changed the request itself")
+			}
+		})
+	}
+}
+
+func TestHTTPLogsAndReceivedHeaderNeverCarryTheBody(t *testing.T) {
+	buf := captureLog(t)
+	s := &ExtAuthzServer{}
+	body := `{"access_token":"` + testJWT + `","cpf":"12345678901"}`
+	req := httptest.NewRequest(http.MethodOptions, "http://services.example.test/secret/internal/path", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	received := rec.Header().Get(receivedHeader)
+	for where, got := range map[string]string{"log": buf.String(), receivedHeader: received} {
+		assertNoCredentials(t, where, got)
+		if strings.Contains(got, "12345678901") {
+			t.Errorf("%s leaks the request body: %s", where, got)
+		}
+		if !strings.Contains(got, fmt.Sprintf("body_size: %d", len(body))) {
+			t.Errorf("%s lost the body size: %s", where, got)
+		}
 	}
 }
 

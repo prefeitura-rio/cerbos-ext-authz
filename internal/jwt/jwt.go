@@ -182,7 +182,8 @@ func (p *parser) ParseToken(tokenString string) (*Claims, error) {
 		p.debugLog("✗ Failed to extract claims")
 		return nil, fmt.Errorf("failed to extract claims")
 	}
-	p.debugLog("✓ Claims extracted - sub=%s, iss=%s, exp=%d", claims.Sub, claims.Iss, claims.Exp)
+	// sub and the other identity claims identify the citizen: never logged.
+	p.debugLog("✓ Claims extracted - iss=%s, exp=%d", claims.Iss, claims.Exp)
 
 	// Step 6: Validate issuer
 	p.debugLog("Step 6: Validating issuer")
