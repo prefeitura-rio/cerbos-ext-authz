@@ -305,7 +305,7 @@ func (s *Service) Authorize(ctx context.Context, req *AuthorizationRequest) (*Au
 			}, nil
 		}
 
-		log.Printf("[AUTH] Authenticated endpoint - JWT valid for principal: %s", principalID)
+		log.Printf("[AUTH] Authenticated endpoint - JWT valid for principal: %s", PrincipalForLog(principalID))
 		return &AuthorizationResponse{
 			Allowed:     true,
 			Status:      "allowed",
@@ -439,24 +439,25 @@ func (s *Service) authorizeToCerbos(ctx context.Context, principalID string, rol
 		},
 	}
 
-	// Log Cerbos authorization request with CPF
+	// The principal is the citizen's CPF: only its pseudonym reaches the logs.
+	principalLog := PrincipalForLog(principalID)
 	log.Printf("[CERBOS] Checking authorization: principal=%s, action=%s, resource=%s %s, roles=%v",
-		principalID, action, method, path, roles)
+		principalLog, action, method, path, roles)
 
 	result, err := s.cerbosClient.CheckResources(ctx, request)
 	duration := time.Since(startTime)
 
 	// Log Cerbos authorization result
 	if err != nil {
-		log.Printf("[CERBOS] ✗ Authorization check failed for principal=%s: %v", principalID, err)
+		log.Printf("[CERBOS] ✗ Authorization check failed for principal=%s: %v", principalLog, err)
 	} else if result != nil {
 		allowed := result.IsAllowed(action)
 		if allowed {
 			log.Printf("[CERBOS] ✓ Authorization ALLOWED: principal=%s, action=%s, resource=%s %s",
-				principalID, action, method, path)
+				principalLog, action, method, path)
 		} else {
 			log.Printf("[CERBOS] ✗ Authorization DENIED: principal=%s, action=%s, resource=%s %s",
-				principalID, action, method, path)
+				principalLog, action, method, path)
 		}
 	}
 
