@@ -20,8 +20,11 @@ func TestRedactQuery(t *testing.T) {
 		"/api/v1/x#frag":                             "/api/v1/x",
 		"/api/v1/x?access_token=" + queryToken:       "/api/v1/x?access_token=[REDACTED]",
 		"/api/v1/x?cpf=12345678909&page=2#top":       "/api/v1/x?cpf=[REDACTED]&page=[REDACTED]",
-		"/api/v1/x?" + queryToken:                    "/api/v1/x?[REDACTED]=[REDACTED]",
-		"/api/v1/x?a%20b=1;flag":                     "/api/v1/x?[REDACTED]=[REDACTED]&flag=[REDACTED]",
+		"/api/v1/x?" + queryToken:                    "/api/v1/x?[REDACTED]",
+		"/api/v1/x?12345678909":                      "/api/v1/x?[REDACTED]",
+		"/api/v1/x?abc123&page=1":                    "/api/v1/x?[REDACTED]&page=[REDACTED]",
+		"/api/v1/x?a%20b=1;flag":                     "/api/v1/x?[REDACTED]=[REDACTED]&[REDACTED]",
+		"/api/v1/x?" + queryToken + "x=1":            "/api/v1/x?[REDACTED]=[REDACTED]",
 		"https://app.example.test/p?code=abc&state=": "https://app.example.test/p?code=[REDACTED]&state=[REDACTED]",
 	}
 	for in, want := range cases {

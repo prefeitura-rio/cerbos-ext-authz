@@ -152,8 +152,8 @@ func redactAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext {
 
 // Query strings can carry credentials (?access_token=...) and citizen data
 // (?cpf=...): the logs and the x-ext-authz-check-received header keep only the
-// parameter names. A name that does not look like one (a value-less ?<token>)
-// is redacted too.
+// parameter names. A bare parameter (no "=") or a name that does not look like
+// one is redacted too.
 var loggableQueryKey = regexp.MustCompile(`^[A-Za-z0-9_.\-\[\]]{1,40}$`)
 
 // urlHeaders hold a path or URL whose query string is redacted.
@@ -177,7 +177,12 @@ func redactQuery(target string) string {
 	rawQuery, _, _ := strings.Cut(rest[1:], "#")
 	var params []string
 	for _, param := range strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
-		key, _, _ := strings.Cut(param, "=")
+		key, _, hasValue := strings.Cut(param, "=")
+		if !hasValue {
+			// A parameter without "=" is a bare value (?<cpf>, ?<token>).
+			params = append(params, redactedValue)
+			continue
+		}
 		if !loggableQueryKey.MatchString(key) {
 			key = redactedValue
 		}
