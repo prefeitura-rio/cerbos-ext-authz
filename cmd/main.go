@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/config"
+	"github.com/prefeitura-rio/cerbos-ext-authz/internal/logsafe"
 	"github.com/prefeitura-rio/cerbos-ext-authz/internal/service"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -194,7 +195,14 @@ func redactQuery(target string) string {
 	return base + "?" + strings.Join(params, "&")
 }
 
-// loggableAttributes is redactAttributes plus the query string redaction.
+// loggableURL is the path (or URL) as the logs and the
+// x-ext-authz-check-received header show it: query values redacted and every
+// CPF in the path masked.
+func loggableURL(target string) string {
+	return logsafe.Path(redactQuery(target))
+}
+
+// loggableAttributes is redactAttributes plus the path and query string redaction.
 func loggableAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext {
 	redacted := redactAttributes(attrs)
 	if redacted.GetRequest().GetHttp() == nil {
@@ -208,18 +216,18 @@ func loggableAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext
 		redacted = clone
 	}
 	httpAttrs := redacted.GetRequest().GetHttp()
-	httpAttrs.Path = redactQuery(httpAttrs.GetPath())
+	httpAttrs.Path = loggableURL(httpAttrs.GetPath())
 	httpAttrs.Query = ""
 	httpAttrs.Fragment = ""
 	for name, value := range httpAttrs.GetHeaders() {
 		if urlHeaders[strings.ToLower(name)] {
-			httpAttrs.Headers[name] = redactQuery(value)
+			httpAttrs.Headers[name] = loggableURL(value)
 		}
 	}
 	return redacted
 }
 
-// loggableHTTPHeaders is redactHTTPHeaders plus the query string redaction.
+// loggableHTTPHeaders is redactHTTPHeaders plus the path and query string redaction.
 func loggableHTTPHeaders(headers http.Header) http.Header {
 	out := redactHTTPHeaders(headers)
 	for name, values := range out {
@@ -228,7 +236,7 @@ func loggableHTTPHeaders(headers http.Header) http.Header {
 		}
 		redacted := make([]string, len(values))
 		for i, v := range values {
-			redacted[i] = redactQuery(v)
+			redacted[i] = loggableURL(v)
 		}
 		out[name] = redacted
 	}
@@ -238,7 +246,7 @@ func loggableHTTPHeaders(headers http.Header) http.Header {
 func (s *ExtAuthzServer) logRequest(allow string, request *authv3.CheckRequest) {
 	httpAttrs := request.GetAttributes().GetRequest().GetHttp()
 	log.Printf("[gRPCv3][%s]: %s%s, attributes: %v\n", allow, httpAttrs.GetHost(),
-		redactQuery(httpAttrs.GetPath()),
+		loggableURL(httpAttrs.GetPath()),
 		loggableAttributes(request.GetAttributes()))
 }
 
@@ -431,7 +439,7 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 	if isClusterInternal {
 		// For cluster-internal requests, use the direct path
 		path = stripQueryParams(httpAttrs.GetPath())
-		log.Printf("[gRPC] Cluster-internal request detected (host: %s), using direct path: %s", host, path)
+		log.Printf("[gRPC] Cluster-internal request detected (host: %s), using direct path: %s", host, logsafe.Path(path))
 	} else if headers != nil {
 		// For external requests, use X-Envoy-Original-Path header
 		if originalPath, exists := headers["x-envoy-original-path"]; exists {
@@ -454,7 +462,7 @@ func (s *ExtAuthzServer) Check(ctx context.Context, request *authv3.CheckRequest
 		}, nil
 	}
 
-	log.Printf("[DEBUG] gRPC Request - Method: %s, Path: %s, Host: %s", method, path, host)
+	log.Printf("[DEBUG] gRPC Request - Method: %s, Path: %s, Host: %s", method, logsafe.Path(path), host)
 
 	// Extract authorization header
 	authHeader := ""
@@ -507,9 +515,9 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	}
 
 	// The body may carry credentials or citizen data: only its size is logged.
-	l := fmt.Sprintf("%s %s%s, headers: %v, body_size: %d\n", request.Method, request.Host, redactQuery(request.URL.String()), loggableHTTPHeaders(request.Header), len(body))
+	l := fmt.Sprintf("%s %s%s, headers: %v, body_size: %d\n", request.Method, request.Host, loggableURL(request.URL.String()), loggableHTTPHeaders(request.Header), len(body))
 
-	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, request.URL.Path, request.Host)
+	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, logsafe.Path(request.URL.Path), request.Host)
 
 	// Health check endpoint - accessible without authorization
 	if request.Method == "GET" && request.URL.Path == "/health" {
@@ -555,7 +563,7 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 	if isClusterInternal {
 		// For cluster-internal requests, use the direct request path
 		path = stripQueryParams(request.URL.Path)
-		log.Printf("[HTTP] Cluster-internal request detected (host: %s), using direct path: %s", host, path)
+		log.Printf("[HTTP] Cluster-internal request detected (host: %s), using direct path: %s", host, logsafe.Path(path))
 	} else {
 		// For external requests, use X-Envoy-Original-Path header
 		originalPath := request.Header.Get("X-Envoy-Original-Path")
