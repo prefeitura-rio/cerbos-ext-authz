@@ -87,7 +87,7 @@ func TestDenyWithDetailsDoesNotLeakHeadersButLogsThem(t *testing.T) {
 				"x-ext-authz-check-result=denied",
 				"x-cerbos-status=\"" + status + "\"",
 				"x-cerbos-action=\"read\"",
-				"x-cerbos-principal=\"12345678901\"",
+				"x-cerbos-principal=\"" + service.PrincipalForLog("12345678901") + "\"",
 				"x-cerbos-cache=\"hit\"",
 				"x-cerbos-service-health=",
 				"x-cerbos-circuit-breaker-state=",
@@ -96,6 +96,9 @@ func TestDenyWithDetailsDoesNotLeakHeadersButLogsThem(t *testing.T) {
 				if !strings.Contains(logs, want) {
 					t.Errorf("log missing %q; got:\n%s", want, logs)
 				}
+			}
+			if strings.Contains(logs, "12345678901") {
+				t.Errorf("deny log leaks the principal (CPF):\n%s", logs)
 			}
 		})
 	}

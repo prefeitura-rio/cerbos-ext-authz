@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -110,11 +111,91 @@ func redactAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext {
 	return clone
 }
 
+// Query strings can carry credentials (?access_token=...) and citizen data
+// (?cpf=...): the logs and the x-ext-authz-check-received header keep only the
+// parameter names. A name that does not look like one (a value-less ?<token>)
+// is redacted too.
+var loggableQueryKey = regexp.MustCompile(`^[A-Za-z0-9_.\-\[\]]{1,40}$`)
+
+// urlHeaders hold a path or URL whose query string is redacted.
+var urlHeaders = map[string]bool{
+	":path":                 true,
+	"x-envoy-original-path": true,
+	"referer":               true,
+}
+
+// redactQuery keeps the path (or URL) and the query parameter names, replaces
+// every value with [REDACTED] and drops the fragment.
+func redactQuery(target string) string {
+	cut := strings.IndexAny(target, "?#")
+	if cut == -1 {
+		return target
+	}
+	base, rest := target[:cut], target[cut:]
+	if rest[0] == '#' {
+		return base
+	}
+	rawQuery, _, _ := strings.Cut(rest[1:], "#")
+	var params []string
+	for _, param := range strings.FieldsFunc(rawQuery, func(r rune) bool { return r == '&' || r == ';' }) {
+		key, _, _ := strings.Cut(param, "=")
+		if !loggableQueryKey.MatchString(key) {
+			key = redactedValue
+		}
+		params = append(params, key+"="+redactedValue)
+	}
+	if len(params) == 0 {
+		return base
+	}
+	return base + "?" + strings.Join(params, "&")
+}
+
+// loggableAttributes is redactAttributes plus the query string redaction.
+func loggableAttributes(attrs *authv3.AttributeContext) *authv3.AttributeContext {
+	redacted := redactAttributes(attrs)
+	if redacted.GetRequest().GetHttp() == nil {
+		return redacted
+	}
+	if redacted == attrs {
+		clone, ok := proto.Clone(attrs).(*authv3.AttributeContext)
+		if !ok {
+			return &authv3.AttributeContext{}
+		}
+		redacted = clone
+	}
+	httpAttrs := redacted.GetRequest().GetHttp()
+	httpAttrs.Path = redactQuery(httpAttrs.GetPath())
+	httpAttrs.Query = ""
+	httpAttrs.Fragment = ""
+	for name, value := range httpAttrs.GetHeaders() {
+		if urlHeaders[strings.ToLower(name)] {
+			httpAttrs.Headers[name] = redactQuery(value)
+		}
+	}
+	return redacted
+}
+
+// loggableHTTPHeaders is redactHTTPHeaders plus the query string redaction.
+func loggableHTTPHeaders(headers http.Header) http.Header {
+	out := redactHTTPHeaders(headers)
+	for name, values := range out {
+		if !urlHeaders[strings.ToLower(name)] {
+			continue
+		}
+		redacted := make([]string, len(values))
+		for i, v := range values {
+			redacted[i] = redactQuery(v)
+		}
+		out[name] = redacted
+	}
+	return out
+}
+
 func (s *ExtAuthzServer) logRequest(allow string, request *authv3.CheckRequest) {
 	httpAttrs := request.GetAttributes().GetRequest().GetHttp()
 	log.Printf("[gRPCv3][%s]: %s%s, attributes: %v\n", allow, httpAttrs.GetHost(),
-		httpAttrs.GetPath(),
-		redactAttributes(request.GetAttributes()))
+		redactQuery(httpAttrs.GetPath()),
+		loggableAttributes(request.GetAttributes()))
 }
 
 // logDenyDetails logs, server-side, the Cerbos decision details that used to be
@@ -139,7 +220,7 @@ func denyDetails(authResponse *service.AuthorizationResponse, cbState func() str
 		cb = cbState()
 	}
 	return fmt.Sprintf("%s=%s x-cerbos-status=%q x-cerbos-action=%q x-cerbos-principal=%q x-cerbos-cache=%q x-cerbos-service-health=%q x-cerbos-circuit-breaker-state=%q",
-		resultHeader, resultDenied, authResponse.Status, authResponse.Action, authResponse.PrincipalID, authResponse.Cache, health, cb)
+		resultHeader, resultDenied, authResponse.Status, authResponse.Action, service.PrincipalForLog(authResponse.PrincipalID), authResponse.Cache, health, cb)
 }
 
 func (s *ExtAuthzServer) allow(request *authv3.CheckRequest) *authv3.CheckResponse {
@@ -157,7 +238,7 @@ func (s *ExtAuthzServer) allow(request *authv3.CheckRequest) *authv3.CheckRespon
 					{
 						Header: &corev3.HeaderValue{
 							Key:   receivedHeader,
-							Value: returnIfNotTooLong(redactAttributes(request.GetAttributes()).String()),
+							Value: returnIfNotTooLong(loggableAttributes(request.GetAttributes()).String()),
 						},
 					},
 				},
@@ -180,7 +261,7 @@ func (s *ExtAuthzServer) allowWithDetails(request *authv3.CheckRequest, authResp
 		{
 			Header: &corev3.HeaderValue{
 				Key:   receivedHeader,
-				Value: returnIfNotTooLong(redactAttributes(request.GetAttributes()).String()),
+				Value: returnIfNotTooLong(loggableAttributes(request.GetAttributes()).String()),
 			},
 		},
 	}
@@ -381,7 +462,7 @@ func (s *ExtAuthzServer) ServeHTTP(response http.ResponseWriter, request *http.R
 		log.Printf("[HTTP] read body failed: %v", err)
 	}
 
-	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, request.URL, redactHTTPHeaders(request.Header), returnIfNotTooLong(string(body)))
+	l := fmt.Sprintf("%s %s%s, headers: %v, body: [%s]\n", request.Method, request.Host, redactQuery(request.URL.String()), loggableHTTPHeaders(request.Header), returnIfNotTooLong(string(body)))
 
 	log.Printf("[DEBUG] HTTP Request - Method: %s, Path: %s, Host: %s", request.Method, request.URL.Path, request.Host)
 
